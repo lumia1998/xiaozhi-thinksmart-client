@@ -1386,16 +1386,21 @@ class Client:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
             if body is None:
                 async with s.get(self.cfg['hub_http'] + path) as r:
+                    r.raise_for_status()
                     return await r.json(content_type=None)
             async with s.post(self.cfg['hub_http'] + path, json=body) as r:
+                r.raise_for_status()
                 return await r.json(content_type=None)
 
     async def refresh_models(self):
         """Ask the hub for its models; False when it didn't answer (down, or still starting)."""
         try:
             data = await self._hub_http('/kiosk/llm?' + urllib.parse.urlencode({'device': self.cfg['device_id']}))
+            if not isinstance(data, dict) or not isinstance(data.get('options'), list):
+                return False
         except Exception:
             return False
+        self.hub_seen = time.monotonic()
         self._apply_models(data)
         return True
 
