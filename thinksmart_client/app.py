@@ -1494,7 +1494,10 @@ class Client:
                     self.recognising = False
                     self.set_state(self.state)
                 if self.deadline:   # still talking
-                    self.deadline = min(max(self.deadline, now + 2.5), self.listen_since + MAX_LISTEN)
+                    if self.listen_mode == 'realtime':
+                        self.deadline = max(self.deadline, now + self.cfg['follow_up_seconds'])
+                    else:
+                        self.deadline = min(max(self.deadline, now + 2.5), self.listen_since + MAX_LISTEN)
             if await self._end_if_silent(now):
                 continue
             if self.uploading and self.listen_mode == 'manual' and now > self.listen_since + MAX_LISTEN:

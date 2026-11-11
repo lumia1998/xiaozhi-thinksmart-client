@@ -37,7 +37,7 @@ DEFAULTS = {
     # whether the wake word is really there, '' trusts the wake word model. Off for now: the hub
     # takes 2-2.5 s here, which delays the answer to "小麦小麦今天天气怎么样" said in one go by ~4 s
     'wake_verify': '',
-    'follow_up_seconds': 10,   # after a reply: keep listening this long for a follow-up
+    'follow_up_seconds': 20,   # after a reply: keep listening this long for a follow-up
     'conversation_idle_seconds': 20,   # close the connection after this much user silence
     'port': 8090,
     'sleep': {'enabled': False, 'start': '22:00', 'end': '07:00'},   # sleep.py

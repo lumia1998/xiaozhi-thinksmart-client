@@ -57,6 +57,22 @@ async def test_ptt_held_too_long_is_stopped(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_realtime_listening_follows_the_speech_past_max_listen(monkeypatch):
+    # a long question: push-to-talk is cut at MAX_LISTEN (above), a realtime listen holds its
+    # deadline follow_up_seconds after the last speech for as long as the user keeps talking
+    from thinksmart_client import app as app_mod
+    monkeypatch.setattr(app_mod, 'MAX_LISTEN', 0.2)
+    c = make_client()
+    await c.wake('voice')                        # the listening window of a wake has a deadline
+    c.audio.mic_level = 0.1                      # talking the whole time (SPEECH_RMS is 0.005)
+    ticker = asyncio.create_task(c._ticker())
+    await asyncio.sleep(0.45)
+    ticker.cancel()
+    assert c.uploading and c.state == 'listening'
+    assert c.deadline > c.listen_since + 5       # follow_up_seconds (10 in the fake) after the speech
+
+
+@pytest.mark.asyncio
 async def test_report_read_during_the_listening_window_closes_the_mic():
     c = make_client()
     await c.wake('voice')                   # "小麦小麦" because the page said a report is waiting
