@@ -200,7 +200,7 @@ body[data-state="listening"] .mic-ring { opacity: .75; }
 .convo-head { display: flex; align-items: center; gap: 12px; height: 52px; padding: 0 4px; flex: none; }
 .head-title { font-size: 18px; font-weight: 600; color: var(--ink2); }
 .head-meta { font-size: 15px; color: var(--ink3); }
-.head-meta::before { content: "·"; margin-right: 10px; }
+.head-meta::before { content: ""; margin-right: 10px; }
 .head-meta:empty { display: none; }
 .messages { position: relative; flex: 1; overflow-y: auto; padding: 18px 6px 18px 4px; display: flex; flex-direction: column; gap: 26px;
             scroll-behavior: smooth; scrollbar-width: none; }

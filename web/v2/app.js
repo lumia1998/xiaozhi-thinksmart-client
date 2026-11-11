@@ -487,13 +487,13 @@ function left(t) {
 function alarmRow(v) {
   if (v.kind === 'timer') {
     return [`<span data-left="${v.at}">${left(v.at)}</span>${v.label ? ' ' + esc(v.label) : ''}`,
-            `倒计时，${hhmm(v.at)} 响${v.snoozed ? ' · 再睡中' : ''}`];
+            `倒计时，${hhmm(v.at)} 响${v.snoozed ? ' ， 再睡中' : ''}`];
   }
   const sub = [dayText(v.at)];
   if (v.repeat) sub.push(esc(v.repeat));
   if (v.snoozed) sub.push('再睡中');
   if (v.kind === 'reminder') sub.push(v.spoken ? '到点念出来' : v.spoken === false ? '只响铃（没合成出语音）' : '正在合成语音');
-  return [`${hhmm(v.at)}${v.label ? ' ' + esc(v.label) : ''}`, sub.join(' · ')];
+  return [`${hhmm(v.at)}${v.label ? ' ' + esc(v.label) : ''}`, sub.join(' ， ')];
 }
 function renderAlarms() {
   const a = ui.alarms;
@@ -519,7 +519,7 @@ function renderAlarms() {
   // home: the missed ones (newest first, at most 3 shown) until 知道了
   $('missedBox').hidden = !a.missed.length;
   $('missedList').innerHTML = a.missed.slice(0, 3).map(m =>
-    `<div class="mh"><b>${dayText(m.at)} ${hhmm(m.at)}</b>${KIND_ICON[m.kind] || ''}${m.label ? ' · ' + esc(m.label) : ''}` +
+    `<div class="mh"><b>${dayText(m.at)} ${hhmm(m.at)}</b>${KIND_ICON[m.kind] || ''}${m.label ? ' ， ' + esc(m.label) : ''}` +
     `<small>${m.why === 'off' ? '设备关着' : m.kind === 'reminder' ? '提醒了 3 分钟没人停' : '响了 10 分钟没人停'}</small></div>`).join('') +
     (a.missed.length > 3 ? `<div class="mh more">还有 ${a.missed.length - 3} 条</div>` : '');
   renderAlarmVol();
@@ -740,7 +740,7 @@ async function renderWifiCard() {
     return;
   }
   const r = await shellCall('wifi_status');
-  $('wifiSub').textContent = !r.ok ? '读不到 WiFi 状态' : r.ssid ? `已连接 ${r.ssid} · ${signalText(r.signal)}` : '没有连接 WiFi';
+  $('wifiSub').textContent = !r.ok ? '读不到 WiFi 状态' : r.ssid ? `已连接 ${r.ssid} ， ${signalText(r.signal)}` : '没有连接 WiFi';
 }
 function openWifi() {
   $('wifi').classList.add('on');
@@ -802,9 +802,9 @@ function wifiJoin(net, hidden) {
   const t = wifi.target, q = net ? signalText(net.signal) : '';
   $('wJoinTitle').textContent = hidden ? '添加隐藏网络' : t.ssid;
   $('wJoinHint').textContent = hidden ? '输入网络名称和密码（没有密码就留空），然后点键盘上的「连接」'
-    : t.mode === 'info' ? '已连接 · ' + q
-    : t.mode === 'saved' ? '已保存的网络 · ' + q + '，点「连接」用保存的密码连接'
-    : t.secure ? '加密网络 · ' + q + '，输入密码后点键盘上的「连接」' : '开放网络 · ' + q;
+    : t.mode === 'info' ? '已连接 ， ' + q
+    : t.mode === 'saved' ? '已保存的网络 ， ' + q + '，点「连接」用保存的密码连接'
+    : t.secure ? '加密网络 ， ' + q + '，输入密码后点键盘上的「连接」' : '开放网络 ， ' + q;
   wifiMsg('');
   wifiPane('wJoin');
   renderJoin();
@@ -917,7 +917,7 @@ $('wPw').addEventListener('keydown', e => {
 
 /* ---- settings: Bluetooth speaker (bt.py; pairing only in the 3-minute "add a phone" window) ---- */
 function btPlaying(d) {
-  const song = [d.title, d.artist].filter(Boolean).join(' · ');
+  const song = [d.title, d.artist].filter(Boolean).join(' ， ');
   return song || '正在播放';
 }
 function renderBluetooth() {
@@ -925,7 +925,7 @@ function renderBluetooth() {
   const on = !!(b && b.available && b.enabled);
   const live = b && b.enabled && (b.devices || []).find(d => d.streaming);
   document.body.classList.toggle('bt-playing', !!live);
-  $('btChipText').textContent = live ? `${live.name} · ${btPlaying(live)}` : '';
+  $('btChipText').textContent = live ? `${live.name} ， ${btPlaying(live)}` : '';
   if (!b) return;
   $('btSwitch').setAttribute('aria-checked', String(on));
   $('btSwitch').disabled = !b.available;
@@ -1025,7 +1025,7 @@ function renderHead() {
   $('headLogo').src = logoSrc(m);
   $('headTitle').textContent = m ? `与 ${m.label} 的对话` : '对话';
   const n = ui.thread.messages.length;
-  $('headMeta').textContent = n ? `${n} 条消息 · ${ui.status.connected ? '对话中' : '记录已保存'}` : '新对话';
+  $('headMeta').textContent = n ? `${n} 条消息 ， ${ui.status.connected ? '对话中' : '记录已保存'}` : '新对话';
 }
 
 function fmtTime(t) {
