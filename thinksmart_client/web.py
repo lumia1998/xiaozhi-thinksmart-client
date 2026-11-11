@@ -6,7 +6,7 @@ import time
 
 from aiohttp import web
 
-from . import __version__, update
+from . import __version__
 from .app import ROOT, Client, local_ip
 
 log = logging.getLogger(__name__)
@@ -20,11 +20,11 @@ def make_app(client: Client):
     app = web.Application()
 
     async def index(_request):
-        # the second design (orb with a face) is the UI since 2026-10-31; /v1 keeps the first one
+        # the second design (orb with a face) is the UI since 2026-10-31; /v1 now redirects here
         return web.FileResponse(WEB / 'v2' / 'index.html', headers={'Cache-Control': 'no-cache'})
 
     async def index_v1(_request):
-        return web.FileResponse(WEB / 'index.html', headers={'Cache-Control': 'no-cache'})
+        raise web.HTTPFound('/')
 
     async def events(request):
         resp = web.StreamResponse(headers={'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache'})
@@ -32,8 +32,7 @@ def make_app(client: Client):
         q = asyncio.Queue()
         client.events.queues.add(q)
         try:
-            q.put_nowait(('snapshot', {**client.snapshot(), 'build': BUILD, 'version': __version__,
-                                       'update': update.read()}))
+            q.put_nowait(('snapshot', {**client.snapshot(), 'build': BUILD}))
             while True:
                 try:
                     event, data = await asyncio.wait_for(q.get(), timeout=15)
@@ -152,22 +151,6 @@ def make_app(client: Client):
     async def network(_request):
         return web.json_response({'ip': local_ip()})
 
-    async def update_check(_request):
-        return web.json_response({'ok': update.request('check')})
-
-    async def update_install(request):
-        if client.state != 'idle':
-            return web.json_response({'ok': False, 'error': '对话结束后再更新'}, status=409)
-        body = await request.json()
-        return web.json_response({'ok': update.request('install', str(body.get('version') or ''),
-                                                       str(body.get('system') or ''))})
-
-    watchers = []   # keeps the task referenced
-
-    async def watch_updates(_app):
-        watchers.append(asyncio.create_task(update.watch(client.events.publish)))
-
-    app.on_startup.append(watch_updates)
     app.router.add_get('/', index)
     app.router.add_get('/v2', index)
     app.router.add_get('/v1', index_v1)
@@ -195,8 +178,6 @@ def make_app(client: Client):
     app.router.add_get('/api/health', health)
     app.router.add_get('/api/network', network)
     app.router.add_post('/api/power-off', power_off)
-    app.router.add_post('/api/update/check', update_check)
-    app.router.add_post('/api/update/install', update_install)
     app.router.add_static('/static/', WEB)
 
     async def revalidate(request, response):

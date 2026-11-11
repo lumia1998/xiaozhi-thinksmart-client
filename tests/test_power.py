@@ -10,22 +10,19 @@ import test_barge_in
 from thinksmart_client import app as app_mod
 
 
-def make_client(monkeypatch, status=None, rc=0, updater_states=b'activating\ninactive\n'):
+def make_client(monkeypatch, rc=0):
     c = test_barge_in.make_client()
     c.play = lambda name: None
 
     async def close():
         c.hub.connected = False
     c.hub.close = close
-    monkeypatch.setattr(app_mod.update, 'read', lambda: status or {'enabled': True, 'current': '0.1.1'})
     monkeypatch.setattr(app_mod, 'HALT_AFTER', 0)
     ran = []
 
     class Proc:
         returncode = rc
         async def communicate(self):
-            if self.cmd[0] == 'systemctl':
-                return updater_states, b''
             return b'', b'sudo: a password is required' if rc else b''
 
     async def exec_(*cmd, **kw):
@@ -55,25 +52,6 @@ async def test_power_off_ends_a_conversation_first(monkeypatch):
     assert c.hub.connected
     await c.power_off()
     assert not c.hub.connected and not c.uploading and c.state == 'idle'
-
-
-@pytest.mark.asyncio
-async def test_no_power_off_during_an_update(monkeypatch):
-    c, ran, events = make_client(monkeypatch, {'enabled': True, 'job': {'state': 'downloading'}})
-    r = await c.power_off()
-    assert not r['ok'] and '更新' in r['error']
-    await asyncio.sleep(0.05)
-    assert ran == [('systemctl', 'is-active', 'thinksmart-update-run.service', 'thinksmart-update-boot.service')]
-    assert not any(k == 'power' for k, _ in events)
-
-
-@pytest.mark.asyncio
-async def test_status_left_busy_by_a_killed_updater_does_not_block(monkeypatch):
-    c, ran, events = make_client(monkeypatch, {'enabled': True, 'job': {'state': 'downloading'}},
-                                 updater_states=b'inactive\ninactive\n')
-    assert await c.power_off() == {'ok': True}
-    await asyncio.sleep(0.05)
-    assert ran[-1] == ('sudo', '-n', 'systemctl', 'halt')
 
 
 @pytest.mark.asyncio

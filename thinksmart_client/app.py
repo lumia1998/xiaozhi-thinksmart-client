@@ -42,7 +42,7 @@ from pathlib import Path
 import aiohttp
 import numpy as np
 
-from . import alarms, bt, config, mcp, sleep, update, wake_verify
+from . import alarms, bt, config, mcp, sleep, wake_verify
 from .audio import OUT_RATE, Audio, load_wav
 from .device import DIM_LEVEL, Keys, Screen, normalize_screen_off
 from .hub import Hub
@@ -62,9 +62,6 @@ SPEECH_RMS = 0.005
 # halted it stays dark with the file systems unmounted, so the cable can be pulled safely
 HALT = ('sudo', '-n', 'systemctl', 'halt')
 HALT_AFTER = 3           # seconds to read "正在关机 … 等 10 秒再拔" before the screen goes dark
-UPDATE_BUSY = ('preparing', 'downloading', 'installing', 'testing', 'rolling_back')
-# installing for a page request, or finishing an interrupted one at boot (self-test, rollback)
-UPDATE_UNITS = ('thinksmart-update-run.service', 'thinksmart-update-boot.service')
 MAX_LISTEN = 60          # seconds: one wake never keeps the mic open longer (a TV could otherwise)
 RECOGNITION_WAIT = 15    # seconds to wait for the hub's text after the user stops (long sentences)
 NORMAL_STOP_TAIL = 0.6   # a normal "tts stop" leaves less than this queued; more means aborted
@@ -355,7 +352,7 @@ class Client:
             self.set_state(self.state)
 
     def health(self):
-        """For the updater's self-test after installing a version (thinksmart-update)."""
+        """Audio streams and successful recent Hub HTTP responses."""
         return {'audio': bool(self.audio._streams) and all(s.active for s in self.audio._streams),
                 'hub': self.hub_seen > 0 and time.monotonic() - self.hub_seen < 30}
 
@@ -835,27 +832,12 @@ class Client:
         leaving /boot (ext2, mounted read-write) to be repaired on the next boot."""
         if self.powering_off:
             return {'ok': True}   # a second tap while the first one is still on its way
-        job = update.read().get('job') or {}
-        if job.get('state') in UPDATE_BUSY and await self._update_running():
-            return {'ok': False, 'error': '正在更新，更新完再关机'}
         self.powering_off = True
         self.events.publish('power', {'state': 'off'})   # cover the page before ending a conversation (up to 3 s)
         if self.hub.connected:
             await self.end()
         asyncio.create_task(self._halt())
         return {'ok': True}
-
-    async def _update_running(self):
-        """The status file can be left saying "downloading" when the updater was killed (its 3 h limit).
-        Both units are oneshot: while they run they are "activating", which is-active's exit code
-        doesn't count as running, so read the states it prints."""
-        try:
-            p = await asyncio.create_subprocess_exec('systemctl', 'is-active', *UPDATE_UNITS,
-                                                     stdout=asyncio.subprocess.PIPE)
-            out, _ = await p.communicate()
-        except OSError:
-            return True
-        return any(s in ('active', 'activating', 'reloading', 'deactivating') for s in out.decode().split())
 
     async def _halt(self):
         await asyncio.sleep(HALT_AFTER)

@@ -43,7 +43,7 @@
       </div>
       <div class="link" id="link"><i></i><span>待机</span></div>
       <div class="clock" id="clock"><span id="time">--:--</span></div>
-      <button class="gear" id="btnSettings" aria-label="设置"><i class="gear-dot" id="gearDot"></i>
+      <button class="gear" id="btnSettings" aria-label="设置">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.2"/><circle cx="10" cy="17" r="2.2"/></svg>
       </button>
@@ -124,23 +124,12 @@
 
 <div class="sheet" id="settings">
   <div class="sheet-bar">
-    <div><h2>设置</h2><p>这台设备自己的偏好，升级客户端也会保留</p></div>
+    <div><h2>设置</h2></div>
     <button class="close" id="settingsClose" aria-label="关闭">
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
   </div>
   <div class="panel">
-    <div class="upd" id="upd">
-      <div class="opt">
-        <div class="opt-text">
-          <b id="updTitle">软件更新</b>
-          <span id="updSub"></span>
-        </div>
-        <button class="upd-btn" id="updBtn"></button>
-      </div>
-      <ul class="upd-notes" id="updNotes"></ul>
-      <div class="upd-bar" id="updBar"><i id="updFill"></i></div>
-    </div>
     <div class="bright">
       <div class="bright-head">
         <b>屏幕亮度</b>
@@ -207,7 +196,7 @@
         <b>聊天记录</b>
         <span>记录保存在本机，断开、重启后还在；每次只带最近一段给模型，更早的自动总结成记忆。清除只删本机存的所有模型的记录和记忆；Claude Code、Grok Bot 有自己的对话和记忆，不受影响。</span>
       </div>
-      <button class="upd-btn clear-btn" id="clearBtn">清除</button>
+      <button class="action-btn clear-btn" id="clearBtn">清除</button>
     </div>
     <p class="opt-note">也可以直接说：「小麦小麦，清除聊天记录」，它会再问一遍。<button class="link-btn" id="clearMemBtn">只清除记忆、保留记录</button></p>
     <div class="opt">
@@ -215,7 +204,7 @@
         <b>WiFi</b>
         <span id="wifiSub">正在读取…</span>
       </div>
-      <button class="upd-btn" id="wifiBtn">切换</button>
+      <button class="action-btn" id="wifiBtn">切换</button>
     </div>
     <div class="alarms-card bt-card" id="btCard">
       <div class="bright-head"><b>蓝牙音箱</b><span class="bright-num" id="btName"></span>
@@ -236,7 +225,7 @@
         <b>关机</b>
         <span>拔电源之前先在这里关机，屏幕变黑后等 10 秒再拔。插着电直接拔，可能把系统弄坏，下次开不了机。</span>
       </div>
-      <button class="upd-btn clear-btn" id="powerBtn">关机</button>
+      <button class="action-btn clear-btn" id="powerBtn">关机</button>
     </div>
   </div>
 </div>
@@ -271,8 +260,8 @@
         <input id="wPw" type="password" data-kb-enter="连接" autocomplete="off" spellcheck="false">
         <button class="w-eye" id="wEye" type="button">显示</button></label>
       <div class="w-msg" id="wMsg"></div>
-      <div class="w-actions"><button class="upd-btn" id="wJoinBtn">连接</button>
-        <button class="upd-btn clear-btn" id="wForget">忘记这个网络</button></div>
+      <div class="w-actions"><button class="action-btn" id="wJoinBtn">连接</button>
+        <button class="action-btn clear-btn" id="wForget">忘记这个网络</button></div>
     </div>
   </section>
 </div>

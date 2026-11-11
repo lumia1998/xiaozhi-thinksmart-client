@@ -224,7 +224,6 @@ function renderStatus() {
   renderBright();
   renderScreenOff();
   renderVol();
-  renderUpdate();
 }
 
 /* ---- models ---- */
@@ -566,142 +565,6 @@ $('ringSnooze').addEventListener('click', () => {
   postJson('/api/alarms/snooze').then(r => { if (r.ok) toast('好的，10 分钟后再叫你'); });   // postJson shows the error
 });
 
-/* ---- settings: software update (update.py: the root updater installs, the page only asks) ---- */
-const UPD_STAGE = { preparing: '正在准备', downloading: '正在下载', installing: '正在安装',
-                    testing: '正在重启并自检', rolling_back: '自检没通过，正在退回' };
-let updArmed = 0;   // first tap on 更新 arms it, a second one within 5 s installs
-let updStarting = 0;   // request sent, the updater hasn't reported yet (it takes a few seconds to start)
-const mb = n => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
-function ago(t) {
-  const m = Math.max(0, Math.round((Date.now() / 1000 - t) / 60));
-  return m < 2 ? '刚刚' : m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.round(m / 60)} 小时前` : `${Math.round(m / 1440)} 天前`;
-}
-// After an update: the state it left, both versions, whatever this run installed. One tap installs
-// the system layer and then the client, and an older updater keeps only the last one's message
-// (已更新到 0.1.5); the versions themselves are always right.
-function updDoneText(u, job) {
-  const sys = (u || {}).system || {};
-  if (!sys.current || !ui.version) return job.message || '更新完成';
-  return `更新完成：系统层 ${sys.current} · 客户端 ${ui.version}`
-    + (/重启设备后生效/.test(job.message || '') ? '，部分改动重启设备后生效' : '');
-}
-function updParts(u) {
-  // what one tap installs, in the updater's order: the system layer (shell, audio...) first
-  const parts = [], sys = u.system || {}, sa = sys.available;
-  if (sa && !(sa.missing || []).length) parts.push({ key: 'system', name: '系统层', ...sa });
-  if (u.available) parts.push({ key: 'client', name: '客户端', ...u.available });
-  return parts;
-}
-function renderUpdate() {
-  const u = ui.update || {}, job = u.job || {}, sys = u.system || {};
-  const parts = updParts(u), avail = parts.length > 0;
-  const busy = job.state in UPD_STAGE;
-  // between the confirming tap and the updater's first report: don't show the 更新 button again
-  // (it looks like the tap missed). Ends when the updater reports (busy, or a result newer than the
-  // tap) or after 30 s of silence.
-  if (updStarting && (busy || (job.time || 0) * 1000 > updStarting - 2000 || Date.now() - updStarting > 30000)) updStarting = 0;
-  const starting = !!updStarting;
-  const recent = !!job.time && Date.now() / 1000 - job.time < 86400;
-  const failed = !busy && recent && (job.state === 'failed' || job.state === 'rolled_back');
-  const cur = !ui.version ? '' : sys.current ? `客户端 ${ui.version} · 系统层 ${sys.current}` : `当前版本 ${ui.version}`;
-  // a system layer this image can't take (it needs packages only a newer image has)
-  const blocked = sys.available && (sys.available.missing || []).length
-    ? `系统层 ${sys.available.version} 要重刷新镜像才能装` : '';
-  let title = '软件更新', text, bad = false, label = '', notes = '';
-  if (!u.enabled) text = (cur ? cur + '。' : '') + '这台设备还没装更新服务';
-  else if (starting) {
-    title = '正在开始更新…';
-    text = '正在连接更新服务器，请稍等';
-  } else if (busy) {
-    const what = job.component === 'system' ? '系统层' : '客户端';
-    title = `正在更新${what} ${job.version}`;
-    const pct = job.state === 'downloading' && job.progress != null ? ` ${Math.round(job.progress * 100)}%` : '';
-    text = `${UPD_STAGE[job.state]}${pct}。` + (job.component === 'system' ? '屏幕可能会闪一下，' : '')
-      + '语音助手会暂停一会儿，请不要断电';
-  } else if (avail) {
-    title = '有新版本 ' + parts.map(p => `${p.name} ${p.version}`).join(' · ');
-    text = failed ? job.message + '。可以再试一次'
-      : `${cur}，下载约 ${mb(parts.reduce((n, p) => n + (p.size || 0), 0))}` + (blocked ? `。${blocked}` : '');
-    bad = failed;
-    if (Date.now() - updArmed < 5000) {
-      // waiting for the confirming tap: the hint stays on the card for those 5 s
-      bad = false;
-      text = `更新时语音助手会停一会儿（约 ${parts.length > 1 ? 2 : 1} 分钟）`
-        + (parts.some(p => p.key === 'system') ? '，屏幕可能会闪一下' : '') + '。再点一下「确认更新」开始';
-    }
-    notes = parts.map(p => (parts.length > 1 ? `<li class="h">${p.name} ${esc(p.version)}</li>` : '')
-                          + (p.notes || []).map(n => `<li>${esc(n)}</li>`).join('')).join('');
-    label = Date.now() - updArmed < 5000 ? '确认更新' : '更新';
-  } else {
-    text = recent && job.state === 'done' ? `${updDoneText(u, job)}，已是最新`
-      : failed ? job.message
-      : u.check_error ? `${cur}。${u.check_error}`
-      : blocked ? `${cur}。${blocked}`
-      : `${cur}，已是最新` + (u.checked ? `（${ago(u.checked)}检查过）` : '');
-    bad = failed || (!!u.check_error && !(recent && job.state === 'done'));
-    label = '检查更新';
-  }
-  $('gearDot').classList.toggle('on', avail && !busy && !starting);
-  $('updTitle').textContent = title;
-  $('updSub').textContent = text;
-  $('updSub').classList.toggle('bad', !!bad);   // toggle(x, undefined) would flip it
-  $('updNotes').innerHTML = notes;
-  const btn = $('updBtn');
-  btn.hidden = !label;
-  btn.textContent = label;
-  btn.disabled = avail && ui.status.state !== 'idle';   // not in the middle of a conversation
-  $('upd').classList.toggle('new', avail && !busy && !starting);
-  $('updBar').hidden = !busy && !starting;
-  $('updBar').classList.toggle('busy', starting || (busy && job.state !== 'downloading'));
-  $('updFill').style.transform = job.state === 'downloading' ? `scaleX(${job.progress || 0})` : '';
-}
-function updateFinished(job) {
-  // once per install, also when the page reloaded because the client restarted with the new version
-  if (!job || !(job.state === 'done' || job.state === 'rolled_back' || job.state === 'failed')) return;
-  if (Date.now() / 1000 - job.time > 300) return;
-  try { if (localStorage.getItem('updShown') === String(job.time)) return; localStorage.setItem('updShown', String(job.time)); } catch (e) { /* no storage */ }
-  toast(job.state === 'done' ? updDoneText(ui.update, job) : job.message, job.state === 'done' ? '' : 'error');
-}
-$('updBtn').addEventListener('click', async () => {
-  const parts = updParts(ui.update || {});
-  if (!parts.length) {
-    if (DEMO) return toast('正在检查更新…');
-    const r = await (await post('/api/update/check'))?.json?.();
-    return toast(r && r.ok ? '正在检查更新…' : '这台设备还没装更新服务', r && r.ok ? '' : 'error');
-  }
-  const sys = parts.find(p => p.key === 'system'), cli = parts.find(p => p.key === 'client');
-  if (Date.now() - updArmed > 5000) {
-    updArmed = Date.now();
-    renderUpdate();
-    return setTimeout(renderUpdate, 5100);
-  }
-  updArmed = 0;
-  updStarting = Date.now();
-  renderUpdate();
-  setTimeout(renderUpdate, 30100);
-  if (DEMO) return;   // ?demo: shows the waiting state (and the button again after 30 s)
-  const r = await (await post('/api/update/install', { version: cli ? cli.version : '', system: sys ? sys.version : '' }))?.json?.();
-  if (!r || !r.ok) {
-    updStarting = 0;
-    renderUpdate();
-    toast((r && r.error) || '没能开始更新', 'error');
-  }
-});
-if (DEMO !== null) {
-  // ?demo&upd=new|sys|both|busy|failed: preview the update card (opens the settings sheet)
-  const kind = new URLSearchParams(location.search).get('upd');
-  const avail = { version: '0.2.0', size: 9.4 * 1048576, notes: ['聊天页的光球加了表情', '修好了睡眠时段跨午夜时不生效'] };
-  const savail = { version: '0.3.0', size: 0.2 * 1048576, notes: ['设置页能切换 WiFi', '可以当蓝牙音箱'], missing: [] };
-  const now = Date.now() / 1000;
-  ui.version = '0.1.0';
-  ui.update = { enabled: true, checked: now - 3600, available: kind && kind !== 'sys' ? avail : null,
-                system: { current: '0.2.0', available: kind === 'sys' || kind === 'both' ? savail : null },
-                job: kind === 'busy' ? { state: 'downloading', version: '0.3.0', progress: .42, time: now, component: 'system' }
-                   : kind === 'failed' ? { state: 'rolled_back', version: '0.3.0', time: now, component: 'system',
-                                           message: '系统层 0.3.0 没装成功（屏幕界面没有启动起来），已退回 0.2.0' } : null };
-  if (kind) $('settings').classList.add('on');
-}
-
 /* ---- settings: chat history (kept on the hub; clearing also clears the hub's copy) ---- */
 let clearArmed = 0, memArmed = 0;   // first tap arms a button, a second one within 5 s clears
 function renderClear() {
@@ -810,7 +673,7 @@ const signalText = s => s > 75 ? '信号很好' : s > 50 ? '信号良好' : s > 
 
 async function renderWifiCard() {
   if (!shellWifi && DEMO === null) {
-    $('wifiSub').textContent = '这台设备的系统层版本较旧，不能在这里切换 WiFi。在上面的「软件更新」里更新系统层后就可以。';
+    $('wifiSub').textContent = '当前显示环境不支持切换 WiFi';
     $('wifiBtn').hidden = true;
     return;
   }
@@ -1227,19 +1090,12 @@ const handlers = {
     switching = null;
     for (const k in seenThreads) delete seenThreads[k];
     seenThreads[s.thread.entry] = s.thread.messages;
-    if (s.update) { ui.version = s.version; ui.update = s.update; }   // the demo's snapshots have none
     if (s.alarms) ui.alarms = s.alarms;
     if (s.bluetooth) ui.bluetooth = s.bluetooth;
     renderModels(); renderThread(); renderStatus(); renderAlarms(); renderBluetooth();
-    updateFinished((s.update || {}).job);
   },
   power(p) {
     $('powerOff').classList.toggle('on', p.state === 'off');
-  },
-  update(u) {
-    ui.update = u;
-    renderUpdate();
-    updateFinished(u.job);
   },
   state(s) {
     ui.status = s; renderStatus(); markLive(); renderHead();
