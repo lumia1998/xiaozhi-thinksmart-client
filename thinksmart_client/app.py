@@ -129,7 +129,6 @@ def overlay(base, extra, at):
     return np.clip(out, -1, 1)
 
 
-ZAI_AT = 0.15   # seconds into the wake chime: just after its second note (0.09 s)
 C5, E5, G5, A5, B5, C6, D6, E6 = 523.25, 659.25, 783.99, 880.0, 987.77, 1046.5, 1174.66, 1318.5
 
 
@@ -209,15 +208,10 @@ class Client:
         self.audio = Audio(self._on_block)
         self.hub = Hub(cfg['hub_ws'], cfg['device_id'], cfg['client_id'], cfg['token'],
                        self._on_json, self._on_audio, self._on_closed)
-        sounds = ROOT / 'web' / 'sounds'
-        # Wake: two rising marimba notes; goodbye is the same two falling
+        # Local wake feedback is a neutral chime; spoken greetings use the Hub's selected TTS.
         self.sounds = {'wake': marimba([G5, D6], 0.09), 'bye': marimba([D6, G5], 0.12, 0.16),
                        'miss': marimba([E6, C6], 0.12, 0.16), 'error': marimba([A5, E5, C5], 0.14),
                        'report': marimba([G5, B5, D6], 0.08)}
-        if (sounds / 'zai.wav').exists():
-            # the one-character "在" comes in as the second note rings, over its tail: played after
-            # the whole chime it came ~0.4 s later
-            self.sounds['wake'] = overlay(self.sounds['wake'], load_wav(sounds / 'zai.wav'), ZAI_AT)
         self.speech_end = 0.0         # monotonic: last time the user was heard talking
         self.tools_listed = asyncio.Event()   # the hub asked for our device tools on this connection
         self.connecting = asyncio.Lock()      # one connection: a second wake while connecting waits for it
