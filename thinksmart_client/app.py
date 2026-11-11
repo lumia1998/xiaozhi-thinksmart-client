@@ -42,7 +42,7 @@ from pathlib import Path
 import aiohttp
 import numpy as np
 
-from . import alarms, bt, config, mcp, sleep, wake_verify
+from . import alarms, bt, config, mcp, sleep, wake_verify, server_settings
 from .audio import OUT_RATE, Audio, load_wav
 from .device import DIM_LEVEL, Keys, Screen, normalize_screen_off
 from .hub import Hub
@@ -269,8 +269,8 @@ class Client:
         self._apply_sleep()
         asyncio.create_task(self._sender())
         asyncio.create_task(self._ticker())
-        asyncio.create_task(self._model_poller())
-        asyncio.create_task(self._report_poller())
+        self.hub_pollers = [asyncio.create_task(self._model_poller()),
+                            asyncio.create_task(self._report_poller())]
         asyncio.create_task(self._alarm_loop())
         await self.bt.start()
         asyncio.create_task(self._bluetooth_loop())
@@ -359,6 +359,35 @@ class Client:
     def snapshot(self):
         return {'status': self.status(), 'models': self.models, 'alarms': self.alarm_view(), 'bluetooth': self.bt.view(),
                 'thread': {'entry': self.view_entry(), 'messages': self.threads.get(self.view_entry(), [])}}
+
+    async def set_server(self, http, websocket=''):
+        values = server_settings.normalize(http, websocket)
+        async with self.connecting:
+            if self.state != 'idle' or self.ring or self.powering_off:
+                raise ValueError('请在对话和响铃结束后修改服务器')
+            if all(self.cfg.get(k) == v for k, v in values.items()):
+                return values
+            # Save first: a disk failure must leave the currently working configuration intact.
+            config.save(**values)
+            for task in self.hub_pollers:
+                task.cancel()
+            await asyncio.gather(*self.hub_pollers, return_exceptions=True)
+            await self.end()
+            self.cfg.update(values)
+            self.hub.url = values['hub_ws']
+            self.verifier = wake_verify.make(self.cfg['wake_verify'], self.cfg['wake_words'], values['hub_http'])
+            self.hub_seen = 0.0
+            self.history_loaded = False
+            self.models = {'current': None, 'options': []}
+            self.threads = {}
+            self.entry = None
+            self.reports = 0
+            self.events.publish('model', self.models)
+            self.events.publish('thread', {'entry': None, 'messages': [], 'reset': True})
+            self.set_state('idle')
+            self.hub_pollers = [asyncio.create_task(self._model_poller()),
+                                asyncio.create_task(self._report_poller())]
+            return values
 
     def view_entry(self):
         cur = self.models.get('current')

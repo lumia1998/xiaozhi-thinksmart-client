@@ -6,7 +6,7 @@ import time
 
 from aiohttp import web
 
-from . import __version__
+from . import __version__, server_settings
 from .app import ROOT, Client, local_ip
 
 log = logging.getLogger(__name__)
@@ -151,6 +151,31 @@ def make_app(client: Client):
     async def network(_request):
         return web.json_response({'ip': local_ip()})
 
+    async def server_get(_request):
+        return web.json_response({k: client.cfg[k] for k in ('hub_http', 'hub_ws')})
+
+    async def server_change(request):
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError('请求格式不正确')
+            values = await client.set_server(body.get('hub_http'), body.get('hub_ws', ''))
+            return web.json_response({'ok': True, **values})
+        except (ValueError, TypeError) as e:
+            return web.json_response({'ok': False, 'error': str(e)}, status=400)
+        except OSError:
+            return web.json_response({'ok': False, 'error': '保存失败，请检查设备存储空间'}, status=500)
+
+    async def server_check(request):
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError('请求格式不正确')
+            values = server_settings.normalize(body.get('hub_http'), body.get('hub_ws', ''))
+        except (ValueError, TypeError) as e:
+            return web.json_response({'ok': False, 'error': str(e)}, status=400)
+        return web.json_response({'ok': True, **await server_settings.check(values, client.cfg, client.hub)})
+
     app.router.add_get('/', index)
     app.router.add_get('/v2', index)
     app.router.add_get('/v1', index_v1)
@@ -178,6 +203,9 @@ def make_app(client: Client):
     app.router.add_get('/api/health', health)
     app.router.add_get('/api/network', network)
     app.router.add_post('/api/power-off', power_off)
+    app.router.add_get('/api/server', server_get)
+    app.router.add_post('/api/server', server_change)
+    app.router.add_post('/api/server/check', server_check)
     app.router.add_static('/static/', WEB)
 
     async def revalidate(request, response):

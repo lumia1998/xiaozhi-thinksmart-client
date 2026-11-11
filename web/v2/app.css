@@ -447,7 +447,7 @@ body[data-state="listening"] .mic-ring { opacity: .75; }
 #settings .panel p, #settings .panel small, #settings .opt-text span,
 #settings .al-text span, #settings .bright-num { font-size: 16px; }
 #settings .opt, #settings .bright, #settings .alarms-card,
-#settings .time { background: var(--slate-2); border: .5px solid var(--slate-6); border-radius: 20px; }
+#settings .time, .server-settings { background: var(--slate-2); border: .5px solid var(--slate-6); border-radius: 20px; }
 #settings .opt-text span, #settings .opt-note, #settings .bright-num,
 #settings .time small, #settings .alarm-empty { color: var(--slate-11); }
 #settings button { box-shadow: none; transition: none; }
@@ -471,3 +471,29 @@ body[data-state="listening"] .mic-ring { opacity: .75; }
 #settings .bt-add { background: var(--slate-2); border-color: var(--slate-7); color: var(--slate-11); }
 #settings .bt-add.on { background: var(--blue-3); border-color: var(--blue-7); color: var(--blue-11); }
 #settings .bright-row, #settings .al-text span, #settings #sleepNote { color: var(--slate-11); }
+.server-settings { display: flex; flex-direction: column; gap: 18px; padding: 24px; }
+.server-heading { display: flex; gap: 16px; align-items: baseline; justify-content: space-between; }
+.server-heading > span { font-size: 16px; color: var(--slate-11); }
+.server-field { display: flex; align-items: center; gap: 20px; }
+.server-field > span { flex: 0 0 110px; font-size: 16px; color: var(--slate-11); }
+.server-field input { width: 100%; min-width: 0; height: 56px; padding: 0 16px; color: var(--slate-12);
+  background: var(--slate-3); border: .5px solid var(--slate-7); border-radius: 12px; font: inherit;
+  user-select: text; -webkit-user-select: text; }
+.server-field input:focus { outline: .5px solid var(--blue-8); border-color: var(--blue-8); }
+.server-field input::placeholder { color: var(--slate-11); font-size: 16px; }
+.server-settings summary { padding: 4px 0; font-size: 16px; color: var(--slate-11); cursor: pointer; }
+.server-settings details[open] summary { margin-bottom: 16px; }
+.server-actions { display: flex; justify-content: flex-end; gap: 12px; }
+.server-actions .action-btn { min-width: 136px; height: 56px; border-radius: 12px; background: var(--slate-3); border: .5px solid var(--slate-7); }
+.server-actions .action-btn:hover { background: var(--slate-4); }
+#settings .server-actions .primary { background: var(--blue-9); border-color: var(--blue-9); color: var(--slate-12); }
+#settings .server-actions .primary:hover { background: var(--blue-10); }
+.server-result { line-height: 1.6; color: var(--slate-11); overflow-wrap: anywhere; }
+.server-result:empty { display: none; }
+.server-result[data-kind="ok"] { color: var(--green-11); }
+.server-result[data-kind="warning"] { color: var(--amber-11); }
+.server-result[data-kind="error"] { color: var(--red-11); }
+@media (max-width: 900px) {
+  .server-field { flex-direction: column; align-items: stretch; gap: 8px; }
+  .server-field > span { flex-basis: auto; }
+}

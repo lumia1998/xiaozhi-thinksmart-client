@@ -131,6 +131,18 @@
     </button>
   </div>
   <div class="panel">
+    <form class="server-settings" id="serverForm">
+      <div class="server-heading"><b>后端服务器</b><span id="serverState" role="status" aria-live="polite"></span></div>
+      <label class="server-field" for="serverHttp"><span>服务器地址</span>
+        <input id="serverHttp" type="url" required placeholder="http://192.0.2.10:16688" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="next"></label>
+      <details id="serverAdvanced"><summary>语音连接地址</summary>
+        <label class="server-field" for="serverWs"><span>WebSocket</span>
+          <input id="serverWs" type="url" placeholder="自动使用服务器语音地址" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="done"></label>
+      </details>
+      <div class="server-actions"><button class="action-btn" id="serverCheck" type="button">检测连接</button>
+        <button class="action-btn primary" id="serverSave" type="submit">保存</button></div>
+      <p class="server-result" id="serverResult" role="status" aria-live="polite"></p>
+    </form>
     <div class="bright">
       <div class="bright-head">
         <b>屏幕亮度</b>
@@ -195,7 +207,7 @@
     <div class="opt">
       <div class="opt-text">
         <b>聊天记录</b>
-        <span>记录保存在本机，断开、重启后还在；每次只带最近一段给模型，更早的自动总结成记忆。清除只删本机存的所有模型的记录和记忆；Claude Code、Grok Bot 有自己的对话和记忆，不受影响。</span>
+        <span>清除服务器保存的聊天记录和总结记忆。</span>
       </div>
       <button class="action-btn clear-btn" id="clearBtn">清除</button>
     </div>

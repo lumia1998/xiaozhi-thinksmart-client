@@ -614,9 +614,71 @@ async function renderIp() {
     try { ip = (await (await fetch('/api/network')).json()).ip; } catch (e) { ip = null; }
   }
   $('ipNum').textContent = ip || '未联网';
-  $('ipSub').textContent = ip ? `在同一网络的电脑上打开 http://${ip}:16688/admin 进网关后台` : '连上 WiFi 后这里显示设备的地址';
+  $('ipSub').textContent = ip ? '' : '尚未连接网络';
 }
-$('btnSettings').addEventListener('click', () => { $('settings').classList.add('on'); renderIp(); renderWifiCard(); });
+$('btnSettings').addEventListener('click', () => { $('settings').classList.add('on'); renderIp(); renderWifiCard(); loadServer(); });
+
+/* ---- settings: remote Hub ---- */
+let serverBusy = false, serverDirty = false;
+const serverValues = () => ({ hub_http: $('serverHttp').value.trim(), hub_ws: $('serverWs').value.trim() });
+function serverMessage(text, kind = '') {
+  $('serverResult').textContent = text;
+  $('serverResult').dataset.kind = kind;
+}
+function serverWorking(busy, action) {
+  serverBusy = busy;
+  $('serverSave').disabled = $('serverCheck').disabled = busy;
+  $('serverHttp').disabled = $('serverWs').disabled = busy;
+  $('serverState').textContent = busy ? action : '';
+}
+async function loadServer() {
+  if (serverBusy || serverDirty) return;
+  try {
+    const r = await fetch('/api/server');
+    if (!r.ok) throw new Error();
+    const data = await r.json();
+    // Do not overwrite text entered while this request was in flight.
+    if (serverDirty) return;
+    $('serverHttp').value = data.hub_http;
+    $('serverWs').value = data.hub_ws;
+  } catch (_) { serverMessage('无法读取服务器配置，请重新打开设置', 'error'); }
+}
+async function checkServer() {
+  if (serverBusy) return;
+  if (!$('serverForm').reportValidity()) return;
+  serverWorking(true, '正在检测');
+  serverMessage('');
+  try {
+    const r = await fetch('/api/server/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(serverValues()) });
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.error || '检测失败');
+    serverMessage(`${data.voice.message}；${data.http.message}`, data.connected ? 'ok' : 'warning');
+  } catch (e) { serverMessage(e.message || '客户端没有响应', 'error'); }
+  finally { serverWorking(false); }
+}
+for (const id of ['serverHttp', 'serverWs']) $(id).addEventListener('input', () => {
+  serverDirty = true;
+  if (id === 'serverHttp') $('serverWs').value = ''; // new HTTP host must never keep the old voice host
+  serverMessage('');
+});
+$('serverCheck').addEventListener('click', checkServer);
+$('serverForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  if (serverBusy || !$('serverForm').reportValidity()) return;
+  serverWorking(true, '正在保存');
+  try {
+    const r = await fetch('/api/server', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(serverValues()) });
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.error || '保存失败');
+    $('serverHttp').value = data.hub_http;
+    $('serverWs').value = data.hub_ws;
+    serverDirty = false;
+    toast('服务器地址已保存');
+    serverWorking(false);
+    await checkServer();
+  } catch (e) { serverMessage(e.message || '客户端没有响应', 'error'); }
+  finally { serverWorking(false); }
+});
 /* ---- settings: WiFi (the kiosk shell scans and joins: thinksmart-kiosk.py, the same code as its welcome page) ---- */
 // The shell answers the client's page only on the device's own screen (127.0.0.1); window.thinksmartShell
 // says it can. An older shell can't: the card then only says so.
