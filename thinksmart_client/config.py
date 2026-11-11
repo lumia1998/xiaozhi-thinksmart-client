@@ -38,6 +38,7 @@ DEFAULTS = {
     # takes 2-2.5 s here, which delays the answer to "小麦小麦今天天气怎么样" said in one go by ~4 s
     'wake_verify': '',
     'follow_up_seconds': 10,   # after a reply: keep listening this long for a follow-up
+    'conversation_idle_seconds': 20,   # close the connection after this much user silence
     'port': 8090,
     'sleep': {'enabled': False, 'start': '22:00', 'end': '07:00'},   # sleep.py
     'brightness': 100,    # the screen's 0-100, set on the page or by voice (no automatic brightness: the user asked)

@@ -32,6 +32,7 @@ sys.modules['thinksmart_client.opus'] = opus
 
 from thinksmart_client import app  # noqa: E402
 from thinksmart_client.audio import FADE, OUT_RATE, Player  # noqa: E402
+from thinksmart_client.silence import SilenceTimer  # noqa: E402
 
 PACKET = bytes(int(OUT_RATE * 0.06))   # 60 ms of reply audio
 FADE_S = FADE / OUT_RATE                # what an interruption leaves to play: the old audio fading out
@@ -67,6 +68,8 @@ def make_client():
     c.heard = False
     c.mute_audio = False
     c.listen_after_reply = False
+    c.ptt_held = False
+    c.silence = SilenceTimer()
     c.powering_off = False
     c.reply_samples = c.reply_packets = c.muted_packets = 0
     c.recognised = 0

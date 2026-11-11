@@ -10,9 +10,9 @@ States shown to the page: idle, connecting, listening, thinking, speaking.
   The same while the hub is still recognising what was said (the wake word is listened for again
   once its VAD says the user stopped) or thinking: the question is dropped, whatever of that turn
   still arrives (its text, its reply) is ignored, and the mic opens for a new one at once.
-- After a reply the microphone stays open for follow_up_seconds, then stops uploading.
-  The connection itself stays until the hub closes it (no speech for ~2 minutes, an exit
-  word, the end button), so waking again within that time keeps the conversation.
+- After a reply the microphone stays open for follow_up_seconds. The device closes the
+  connection after conversation_idle_seconds of user silence, including when upload stopped.
+  Recognition, model/tool work and reply playback do not count toward that timeout.
 - The hub keeps every model's conversation on disk (data/chat.db) and gives the next connection
   its recent part, so the page's threads survive a closed connection and a restart: they are loaded
   from the hub (/kiosk/chat/history) when not connected. Clearing them (settings, or saying
@@ -46,6 +46,7 @@ from . import alarms, bt, config, mcp, sleep, update, wake_verify
 from .audio import OUT_RATE, Audio, load_wav
 from .device import DIM_LEVEL, Keys, Screen, normalize_screen_off
 from .hub import Hub
+from .silence import SilenceTimer
 from .kws import Kws
 from .opus import Decoder, Encoder
 
@@ -170,6 +171,7 @@ class Events:
 class Client:
     def __init__(self, cfg):
         self.cfg = cfg
+        self.silence = SilenceTimer(cfg.get('conversation_idle_seconds', 20))
         self.events = Events()
         self.loop = None
         self.state = 'idle'
@@ -316,6 +318,8 @@ class Client:
     # ---- state ----
 
     def set_state(self, state):
+        if state not in ('idle', 'listening'):
+            self.silence.reset()
         self.audio.aec_hold = self.hub.connected or self.state == 'connecting'
         if state != self.state:
             self.state = state
@@ -451,6 +455,7 @@ class Client:
         self.listen_mode = mode
         self.vad_ended = False
         self.listen_since = time.monotonic()
+        self.silence.reset(self.listen_since)
         self.awaiting_text = False
         self.hub_pending = False
         if self.aborted_at is not None:
@@ -497,6 +502,7 @@ class Client:
 
     async def end(self):
         """End the conversation: stop everything and close the channel, which clears the hub's context."""
+        self.silence.reset()
         if self.in_turn():
             await self.abort()
         self.uploading = False
@@ -771,6 +777,7 @@ class Client:
 
     async def _on_closed(self):
         # the conversation is over (the hub's idle timeout, an exit word, the end button)
+        self.silence.reset()
         self.play('bye')
         self.uploading = False
         self.vad_ended = False
@@ -1451,6 +1458,25 @@ class Client:
 
     # ---- timers ----
 
+    def _silent_expired(self, now):
+        waiting = (self.state in ('idle', 'listening') and not self.ptt_held
+                   and not self.awaiting_text and not self.recognising and not self.hub_pending
+                   and not self.listen_after_reply and not self.abort_pending
+                   and self.audio.player.buffered() <= 0.02)
+        return self.silence.observe(now, connected=self.hub.connected, waiting=waiting,
+                                    speech=self.uploading and self.audio.mic_level > SPEECH_RMS)
+
+    async def _end_if_silent(self, now):
+        if not self._silent_expired(now):
+            return False
+        # Serialize with a fresh wake/reconnect, then recheck in case state changed while waiting.
+        async with self.connecting:
+            if not self._silent_expired(time.monotonic()):
+                return False
+            log.info('conversation idle for %.0f seconds: closing hub connection', self.silence.seconds)
+            await self.end()
+            return True
+
     async def _ticker(self):
         last_level = 0.0
         while True:
@@ -1469,6 +1495,8 @@ class Client:
                     self.set_state(self.state)
                 if self.deadline:   # still talking
                     self.deadline = min(max(self.deadline, now + 2.5), self.listen_since + MAX_LISTEN)
+            if await self._end_if_silent(now):
+                continue
             if self.uploading and self.listen_mode == 'manual' and now > self.listen_since + MAX_LISTEN:
                 # push-to-talk held (or a release lost) for too long: the hub buffers all of it
                 log.info('push-to-talk open for %d s: stopping it', MAX_LISTEN)
