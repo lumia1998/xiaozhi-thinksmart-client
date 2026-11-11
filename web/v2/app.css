@@ -435,3 +435,39 @@ body[data-state="listening"] .mic-ring { opacity: .75; }
 .w-msg.bad { color: var(--bad); } .w-msg.ok { color: var(--ok); }
 .w-spin { width: 22px; height: 22px; border-radius: 50%; border: 3px solid #ffffff22; border-top-color: var(--accent2); animation: wspin .8s linear infinite; }
 .w-actions { display: flex; gap: 16px; }
+
+/* Settings use three readable touch-screen text sizes and Radix semantic steps. */
+#settings { background: var(--slate-1); }
+#settings { color: var(--slate-12); }
+#settings *, #settings *::before, #settings *::after { border-width: .5px; box-shadow: none; transition: none; }
+#settings .panel { gap: 20px; padding-bottom: 24px; }
+#settings .sheet-bar h2 { font-size: 28px; }
+#settings .panel, #settings .panel button, #settings .panel b,
+#settings .panel input { font-size: 20px; }
+#settings .panel p, #settings .panel small, #settings .opt-text span,
+#settings .al-text span, #settings .bright-num { font-size: 16px; }
+#settings .opt, #settings .bright, #settings .alarms-card,
+#settings .time { background: var(--slate-2); border: .5px solid var(--slate-6); border-radius: 20px; }
+#settings .opt-text span, #settings .opt-note, #settings .bright-num,
+#settings .time small, #settings .alarm-empty { color: var(--slate-11); }
+#settings button { box-shadow: none; transition: none; }
+#settings .close, #settings .action-btn, #settings .al-del, #settings .stepper button,
+#settings .minutes button { background: var(--slate-3); border-color: var(--slate-7); color: var(--slate-12); }
+#settings .switch { background: var(--slate-4); border-color: var(--slate-7); }
+#settings .switch i { background: var(--slate-12); box-shadow: none; }
+#settings .switch[aria-checked="true"], #settings .minutes button.on { background: var(--blue-9); color: var(--slate-12); }
+#settings .range::-webkit-slider-runnable-track,
+#settings #brightRange::-webkit-slider-runnable-track { background: linear-gradient(var(--blue-9), var(--blue-9)) 0 0 / var(--fill, 50%) 100% no-repeat, var(--slate-5); }
+#settings .range::-webkit-slider-thumb, #settings #brightRange::-webkit-slider-thumb { background: var(--slate-12); box-shadow: none; }
+#settings .al { background: var(--slate-3); border-color: var(--slate-6); }
+#settings .al i, #settings .al.phone i { color: var(--blue-12); background: var(--blue-4); }
+#settings .al.timer i, #settings .alarm-warn { color: var(--amber-11); background: var(--amber-3); border-color: var(--amber-6); }
+#settings .al.reminder i { color: var(--purple-11); background: var(--purple-3); }
+#settings .al.phone.live i { color: var(--green-11); background: var(--green-3); }
+#settings .al-text .live { color: var(--green-11); }
+#settings .al-del.armed, #settings .clear-btn.armed { color: var(--slate-12); background: var(--red-9); }
+#settings .link-btn { color: var(--blue-11); }
+#settings .link-btn.armed { color: var(--red-11); }
+#settings .bt-add { background: var(--slate-2); border-color: var(--slate-7); color: var(--slate-11); }
+#settings .bt-add.on { background: var(--blue-3); border-color: var(--blue-7); color: var(--blue-11); }
+#settings .bright-row, #settings .al-text span, #settings #sleepNote { color: var(--slate-11); }
