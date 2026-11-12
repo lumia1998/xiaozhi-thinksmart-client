@@ -1,5 +1,5 @@
 [Unit]
-Description=ThinkSmart voice client (wake word, talks to xiaozhi-hub, serves the kiosk page on 127.0.0.1:8090)
+Description=ThinkSmart voice client (wake word, talks to xiaozhi-hub, serves the kiosk page on :8090)
 After=network-online.target user@1000.service
 Wants=network-online.target
 

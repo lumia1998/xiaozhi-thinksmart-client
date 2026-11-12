@@ -15,8 +15,9 @@ async def main():
     await client.start()
     runner = web.AppRunner(make_app(client), access_log=None)
     await runner.setup()
-    await web.TCPSite(runner, '127.0.0.1', cfg['port']).start()
-    logging.getLogger(__name__).info('page on http://127.0.0.1:%d/', cfg['port'])
+    # all interfaces: the page is opened from another machine on the LAN (the API has no authentication)
+    await web.TCPSite(runner, '0.0.0.0', cfg['port']).start()
+    logging.getLogger(__name__).info('page on http://0.0.0.0:%d/', cfg['port'])
     await asyncio.Event().wait()
 
 

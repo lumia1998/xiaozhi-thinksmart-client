@@ -1,4 +1,5 @@
-"""The page the kiosk shows (127.0.0.1 only): static files, an event stream and button actions."""
+"""The page the kiosk shows (all interfaces on the LAN, no authentication): static files, an event
+stream and button actions."""
 import asyncio
 import json
 import logging
