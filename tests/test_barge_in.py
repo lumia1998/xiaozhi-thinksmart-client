@@ -43,10 +43,16 @@ class FakeHub:
         self.sent = []
         self.connected = True
         self.features = {}
+        self.closed = False
 
     async def send(self, msg):
         self.sent.append(msg)
         return True
+
+    async def close(self):
+        # app.Client.end() closes the channel; the real one then calls back _on_closed
+        self.closed = True
+        self.connected = False
 
     def kinds(self):
         return [(m['type'], m.get('state')) for m in self.sent]
@@ -54,7 +60,7 @@ class FakeHub:
 
 def make_client():
     c = app.Client.__new__(app.Client)
-    c.cfg = {'follow_up_seconds': 10}
+    c.cfg = {'follow_up_seconds': 5}
     c.events = app.Events()
     c.state = 'idle'
     c.uploading = False

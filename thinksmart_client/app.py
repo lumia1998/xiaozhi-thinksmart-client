@@ -648,9 +648,12 @@ class Client:
                 log.info('the hub recognised nothing')
                 if self.awaiting_text:
                     # the mic is closed and this was all we were waiting for ("didn't catch that"
-                    # after a wake; a follow-up window ends quietly, as when nobody talks in it)
+                    # after a wake; a follow-up window ends the conversation, as when nobody talks)
                     self.awaiting_text = False
-                    await self.stop_uploading(missed=not self.heard)
+                    if self.heard:
+                        await self.end()
+                    else:
+                        await self.stop_uploading(missed=True)
                 elif self.recognising:
                     # the mic is still open: back to listening
                     self.recognising = False
@@ -1523,16 +1526,27 @@ class Client:
                     if self.speech_end > self.listen_since and waiting:
                         # they did talk; a long sentence takes the hub a while to recognise, so
                         # close the mic but wait for its text before saying "didn't catch that"
-                        # (or, in a follow-up window, before going idle: its answer would be lost)
+                        # (or, in a follow-up window, before ending the conversation: its answer
+                        # would be lost)
                         self.uploading = False
                         self.awaiting_text = True
                         self.deadline = now + RECOGNITION_WAIT
                         self.set_state('thinking')
                     else:
-                        await self.stop_uploading(missed=not self.heard)
+                        if self.heard:
+                            # a follow-up window that recognised nothing: end the conversation (the
+                            # mic shuts and the channel closes), not just go idle with it open
+                            log.info('nothing recognised in the follow-up window: ending the conversation')
+                            await self.end()
+                        else:
+                            # after a wake: "didn't catch that", and the channel stays for a retry
+                            await self.stop_uploading(missed=True)
                 elif self.state == 'thinking' and not self.uploading:
                     missed, self.awaiting_text = self.awaiting_text and not self.heard, False
-                    await self.stop_uploading(missed=missed)
+                    if self.heard:
+                        await self.end()   # spoke in the follow-up window, no text came back
+                    else:
+                        await self.stop_uploading(missed=missed)
             if self.state in ('listening', 'speaking') and now - last_level >= 0.1:
                 last_level = now
                 self.events.publish('level', {'mic': round(self.audio.mic_level, 4),

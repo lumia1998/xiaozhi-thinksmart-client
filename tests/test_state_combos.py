@@ -69,7 +69,7 @@ async def test_realtime_listening_follows_the_speech_past_max_listen(monkeypatch
     await asyncio.sleep(0.45)
     ticker.cancel()
     assert c.uploading and c.state == 'listening'
-    assert c.deadline > c.listen_since + 5       # follow_up_seconds (10 in the fake) after the speech
+    assert c.deadline > c.listen_since + 5       # follow_up_seconds (5 in the fake) after the speech
 
 
 @pytest.mark.asyncio
