@@ -1,9 +1,10 @@
 <!doctype html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>小麦</title>
+<title>小葵</title>
+<link rel="stylesheet" href="/static/v2/radix.css">
 <link rel="stylesheet" href="/static/v2/app.css">
 </head>
 <body data-state="idle" class="fresh">
@@ -14,7 +15,7 @@
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round">
           <path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4"/></svg>
       </div>
-      <div class="name">小麦</div>
+      <div class="name">小葵</div>
     </div>
     <button class="model-pill" id="modelPill" aria-label="切换模型">
       <img class="tile" id="pillLogo" alt="">
@@ -43,7 +44,7 @@
       </div>
       <div class="link" id="link"><i></i><span>待机</span></div>
       <div class="clock" id="clock"><span id="time">--:--</span></div>
-      <button class="gear" id="btnSettings" aria-label="设置"><i class="gear-dot" id="gearDot"></i>
+      <button class="gear" id="btnSettings" aria-label="设置">
         <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <path d="M4 7h10M18 7h2M4 17h4M12 17h8"/><circle cx="16" cy="7" r="2.2"/><circle cx="10" cy="17" r="2.2"/></svg>
       </button>
@@ -52,24 +53,12 @@
 
   <main class="main">
     <section class="stage">
-      <div class="orb" id="orb">
-        <!-- static pre-rendered glows, one per state; only opacity changes (cross-fade) -->
-        <div class="glows" aria-hidden="true">
-          <i class="g-idle"></i><i class="g-connecting"></i><i class="g-listening"></i><i class="g-thinking"></i><i class="g-speaking"></i>
-        </div>
-        <div class="corona" id="corona"></div>
-        <div class="core" id="core">
-          <i class="c-idle"></i><i class="c-connecting"></i><i class="c-listening"></i><i class="c-thinking"></i><i class="c-speaking"></i>
-          <!-- the orb's face: eyes, cheeks and mouth; expressions follow body[data-state] -->
-          <div class="face" id="face" aria-hidden="true">
-            <span class="eye eye-l"><u></u></span><span class="eye eye-r"><u></u></span>
-            <span class="cheek cheek-l"></span><span class="cheek cheek-r"></span>
-            <span class="mouth" id="mouth"></span>
-          </div>
-          <b class="gloss"></b>
-        </div>
+      <div class="avatar" id="avatar" role="img" aria-label="小葵，戴草帽的猫耳女孩">
+        <img src="/static/v2/avatar/avatar-base.webp" width="917" height="917" alt="" draggable="false" fetchpriority="high">
+        <i class="avatar-eye left" aria-hidden="true"></i>
+        <i class="avatar-eye right" aria-hidden="true"></i>
       </div>
-      <h1 class="title" id="title">说<em>「小麦小麦」</em></h1>
+      <h1 class="title" id="title">说<em>「小葵」</em></h1>
       <p class="hint" id="hint">或者点麦克风；按住可以直接说</p>
       <div class="controls">
         <button class="ctl" id="btnAbort" aria-label="打断">
@@ -124,23 +113,30 @@
 
 <div class="sheet" id="settings">
   <div class="sheet-bar">
-    <div><h2>设置</h2><p>这台设备自己的偏好，升级客户端也会保留</p></div>
+    <div><h2>设置</h2></div>
     <button class="close" id="settingsClose" aria-label="关闭">
       <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
     </button>
   </div>
   <div class="panel">
-    <div class="upd" id="upd">
-      <div class="opt">
-        <div class="opt-text">
-          <b id="updTitle">软件更新</b>
-          <span id="updSub"></span>
-        </div>
-        <button class="upd-btn" id="updBtn"></button>
+    <form class="server-settings" id="serverForm">
+      <div class="server-heading"><b>后端服务器</b><span id="serverState" role="status" aria-live="polite"></span></div>
+      <label class="server-field" for="serverHttp"><span>服务器地址</span>
+        <input id="serverHttp" type="url" required placeholder="http://192.0.2.30:16688" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="next"></label>
+      <details id="serverAdvanced"><summary>语音连接地址</summary>
+        <label class="server-field" for="serverWs"><span>WebSocket</span>
+          <input id="serverWs" type="url" placeholder="自动使用服务器语音地址" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="done"></label>
+      </details>
+      <div class="pairing-settings">
+        <div class="pairing-heading"><b>设备配对</b><span id="serverPairingState" role="status"></span></div>
+        <label class="server-field" for="serverPairingToken"><span>配对令牌</span>
+          <input id="serverPairingToken" type="password" placeholder="粘贴后台生成的配对令牌" autocomplete="off" autocapitalize="none" spellcheck="false" enterkeyhint="done"></label>
+        <label class="pairing-clear"><input id="serverPairingClear" type="checkbox">清除已保存的令牌</label>
       </div>
-      <ul class="upd-notes" id="updNotes"></ul>
-      <div class="upd-bar" id="updBar"><i id="updFill"></i></div>
-    </div>
+      <div class="server-actions"><button class="action-btn" id="serverCheck" type="button">检测连接</button>
+        <button class="action-btn primary" id="serverSave" type="submit">保存</button></div>
+      <p class="server-result" id="serverResult" role="status" aria-live="polite"></p>
+    </form>
     <div class="bright">
       <div class="bright-head">
         <b>屏幕亮度</b>
@@ -172,14 +168,14 @@
       <div class="bright-head"><b>闹钟和提醒</b><span class="bright-num" id="alarmCount"></span></div>
       <p class="alarm-warn" id="alarmWarn">设备时间还没和网络同步，闹钟暂停，同步后自动恢复</p>
       <div class="alarm-list" id="alarmList"></div>
-      <p class="opt-note">直接说：「小麦小麦，明早 7 点叫我」「倒计时 5 分钟」「10 分钟后提醒我晾衣服」「工作日早上 7 点半叫我」「我有哪些闹钟」「取消明早的闹钟」</p>
+      <p class="opt-note">直接说：「小葵，明早 7 点叫我」「倒计时 5 分钟」「10 分钟后提醒我晾衣服」「工作日早上 7 点半叫我」「我有哪些闹钟」「取消明早的闹钟」</p>
       <div class="bright-head"><b class="sub">铃声</b><span class="bright-num">点一下试听</span></div>
       <div class="minutes tones" id="tones"></div>
     </div>
     <div class="opt">
       <div class="opt-text">
         <b>自动熄屏</b>
-        <span>一段时间没碰屏幕、也没在对话就熄屏；碰一下屏幕、走近或叫「小麦小麦」就亮。关掉就一直亮着，睡眠时段照常调暗。</span>
+        <span>一段时间没碰屏幕、也没在对话就熄屏；碰一下屏幕、走近或叫「小葵」就亮。关掉就一直亮着，睡眠时段照常调暗。</span>
       </div>
       <button class="switch" id="offSwitch" role="switch" aria-checked="true" aria-label="自动熄屏"><i></i></button>
     </div>
@@ -201,21 +197,21 @@
         <div class="stepper"><button data-k="end" data-d="-30" aria-label="提前半小时">−</button><b id="sleepEnd">07:00</b><button data-k="end" data-d="30" aria-label="推后半小时">+</button></div></div>
     </div>
     <p class="opt-note" id="sleepNote"></p>
-    <p class="opt-note">也可以直接说：「小麦小麦，晚上十点到早上七点别念了」「关掉睡眠模式」</p>
+    <p class="opt-note">也可以直接说：「小葵，晚上十点到早上七点别念了」「关掉睡眠模式」</p>
     <div class="opt">
       <div class="opt-text">
         <b>聊天记录</b>
-        <span>记录保存在本机，断开、重启后还在；每次只带最近一段给模型，更早的自动总结成记忆。清除只删本机存的所有模型的记录和记忆；Claude Code、Grok Bot 有自己的对话和记忆，不受影响。</span>
+        <span>清除服务器保存的聊天记录和总结记忆。</span>
       </div>
-      <button class="upd-btn clear-btn" id="clearBtn">清除</button>
+      <button class="action-btn clear-btn" id="clearBtn">清除</button>
     </div>
-    <p class="opt-note">也可以直接说：「小麦小麦，清除聊天记录」，它会再问一遍。<button class="link-btn" id="clearMemBtn">只清除记忆、保留记录</button></p>
+    <p class="opt-note">也可以直接说：「小葵，清除聊天记录」，它会再问一遍。<button class="link-btn" id="clearMemBtn">只清除记忆、保留记录</button></p>
     <div class="opt">
       <div class="opt-text">
         <b>WiFi</b>
         <span id="wifiSub">正在读取…</span>
       </div>
-      <button class="upd-btn" id="wifiBtn">切换</button>
+      <button class="action-btn" id="wifiBtn">切换</button>
     </div>
     <div class="alarms-card bt-card" id="btCard">
       <div class="bright-head"><b>蓝牙音箱</b><span class="bright-num" id="btName"></span>
@@ -236,7 +232,7 @@
         <b>关机</b>
         <span>拔电源之前先在这里关机，屏幕变黑后等 10 秒再拔。插着电直接拔，可能把系统弄坏，下次开不了机。</span>
       </div>
-      <button class="upd-btn clear-btn" id="powerBtn">关机</button>
+      <button class="action-btn clear-btn" id="powerBtn">关机</button>
     </div>
   </div>
 </div>
@@ -271,8 +267,8 @@
         <input id="wPw" type="password" data-kb-enter="连接" autocomplete="off" spellcheck="false">
         <button class="w-eye" id="wEye" type="button">显示</button></label>
       <div class="w-msg" id="wMsg"></div>
-      <div class="w-actions"><button class="upd-btn" id="wJoinBtn">连接</button>
-        <button class="upd-btn clear-btn" id="wForget">忘记这个网络</button></div>
+      <div class="w-actions"><button class="action-btn" id="wJoinBtn">连接</button>
+        <button class="action-btn clear-btn" id="wForget">忘记这个网络</button></div>
     </div>
   </section>
 </div>
@@ -288,7 +284,7 @@
     <button class="ring-snooze" id="ringSnooze">再睡 10 分钟</button>
     <button class="ring-stop" id="ringStop">停止</button>
   </div>
-  <p class="ring-hint">也可以喊「小麦小麦」停下</p>
+  <p class="ring-hint">也可以喊「小葵」停下</p>
 </div>
 <div class="power-off" id="powerOff"><b>正在关机</b><span>屏幕变黑后等 10 秒再拔掉电源</span></div>
 <div class="toast" id="toast"></div>
@@ -299,6 +295,7 @@
   <div class="hud-num" id="hudNum">0</div>
 </div>
 
+<script src="/static/v2/avatar.js"></script>
 <script src="/static/v2/app.js"></script>
 </body>
 </html>

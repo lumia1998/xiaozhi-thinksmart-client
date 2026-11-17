@@ -4,6 +4,7 @@ The file holds only what belongs to this device or its user (ids, settings chang
 by voice), never copies of the defaults, so a client update can change a default."""
 import json
 import logging
+import os
 import pathlib
 import uuid
 
@@ -15,16 +16,13 @@ DEFAULTS = {
     'hub_ws': 'ws://127.0.0.1:16689/xiaozhi/v1/',
     'hub_http': 'http://127.0.0.1:16688',
     'token': 'test-token',
+    'pairing_token': '',  # optional device pairing token; never shown in logs or UI
     'device_id': '',      # filled from the Wi-Fi MAC; the hub remembers the model per device id
     'client_id': '',
     # sherpa-onnx keywords: pinyin initials/finals with tones, then @label
-    # 2026-10-31: renamed 小二 -> 小麦. Tested with 10 edge-tts voices x 3 speeds: 小麦小麦 and
-    # 哈喽小麦 30/30 each, no false wakes on 20 confusable sentences x 10 voices (小麦色, 小卖部,
-    # 晓梅...). 小麦 alone woke on nearly every sentence containing it. 小麦同学 added the same day:
-    # 30/30, the other two unchanged, 1/10 false wake on 小美同学. 你好小麦 left out: 你好小妹 woke it
-    # 8-9/10 at any threshold (the model can't tell 麦 from 妹 there).
-    'wake_words': ['x iǎo m ài x iǎo m ài @小麦小麦', 'h ā l óu x iǎo m ài @哈喽小麦',
-                   'x iǎo m ài t óng x ué @小麦同学'],
+    # The short name has a stricter threshold; longer phrases remain supported.
+    'wake_words': ['x iǎo k uí x iǎo k uí @小葵小葵', 'h ā l óu x iǎo k uí @哈喽小葵',
+                   'x iǎo k uí t óng x ué @小葵同学', 'x iǎo k uí :1.5 #0.4 @小葵'],
     'kws_score': 2.0,
     'kws_threshold': 0.25,
     # beam width: with 2 a keyword easily loses its path before it is finished (哈喽阿满 woke only
@@ -35,9 +33,10 @@ DEFAULTS = {
     'kws_gain_db': 10,
     # second look at each wake word hit (wake_verify.py): 'hub' asks the hub's speech recogniser
     # whether the wake word is really there, '' trusts the wake word model. Off for now: the hub
-    # takes 2-2.5 s here, which delays the answer to "小麦小麦今天天气怎么样" said in one go by ~4 s
+    # takes 2-2.5 s here, which delays an uninterrupted wake-word-plus-question utterance by ~4 s
     'wake_verify': '',
-    'follow_up_seconds': 10,   # after a reply: keep listening this long for a follow-up
+    'follow_up_seconds': 20,   # after a reply: keep listening this long for a follow-up
+    'conversation_idle_seconds': 20,   # close the connection after this much user silence
     'port': 8090,
     'sleep': {'enabled': False, 'start': '22:00', 'end': '07:00'},   # sleep.py
     'brightness': 100,    # the screen's 0-100, set on the page or by voice (no automatic brightness: the user asked)
@@ -86,4 +85,8 @@ def save(**values):
     PATH.parent.mkdir(parents=True, exist_ok=True)
     tmp = PATH.with_suffix('.tmp')
     tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
     tmp.replace(PATH)

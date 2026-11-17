@@ -15,10 +15,13 @@ log = logging.getLogger(__name__)
 
 
 class Hub:
-    def __init__(self, url, device_id, client_id, token, on_json, on_audio, on_closed):
+    def __init__(self, url, device_id, client_id, token, on_json, on_audio, on_closed, pairing_token=''):
         self.url = url
+        self.pairing_token = pairing_token or ''
         self.headers = {'Authorization': f'Bearer {token}', 'Protocol-Version': '1',
                         'Device-Id': device_id, 'Client-Id': client_id}
+        if self.pairing_token:
+            self.headers['X-Device-Pairing-Token'] = self.pairing_token
         self.on_json, self.on_audio, self.on_closed = on_json, on_audio, on_closed
         self.ws = None
         self.session_id = None

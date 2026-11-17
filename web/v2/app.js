@@ -36,151 +36,43 @@ function tick() {
   tickAlarms();
 }
 
-/* ---- the orb's corona: 48 bars around the orb, one shape per state ----
-   idle: short and still. connecting: 12 dashes, turned slowly by CSS. thinking: a comet orbiting (CSS).
-   listening: the whole ring pushes outward with your voice, all bars together — loud is big, quiet barely moves.
-   speaking: three lobes turning round the ring, swelling with the reply's volume.
-   Only listening/speaking redraw every frame; any state change morphs the bars over 0.4 s, then the loop stops.
-   All bars are drawn on one canvas: as 48 elements, restyling them 30 times a second kept
-   the device's main thread at ~93% and the page at ~17 fps. */
-const BARS = 48, R_IN = 110, BAR_W = 6, REST = 8, REACH = 46;   // px; REST + REACH stays inside the canvas
-const corona = document.createElement('canvas');
-const CSIZE = 330, DPR = Math.min(2, window.devicePixelRatio || 1);
-corona.width = corona.height = CSIZE * DPR;
-corona.style.width = corona.style.height = '100%';
-$('corona').appendChild(corona);
-const cx = corona.getContext('2d');
-const ANG = Array.from({ length: BARS }, (_, i) => i / BARS * Math.PI * 2);
-const COS = ANG.map(Math.cos), SIN = ANG.map(Math.sin);
-// per bar: [length px, opacity]; what is on screen, where a morph starts, and where the state wants it
-const cur = new Float32Array(BARS * 2), from = new Float32Array(BARS * 2), tgt = new Float32Array(BARS * 2);
-let barFill = null, barFillState = '';
-function fillFor(state) {
-  // one radial gradient for all bars: inner end --c2, outer end --c1
-  if (barFillState !== state) {
-    const css = getComputedStyle(document.body);
-    barFill = cx.createRadialGradient(0, 0, R_IN, 0, 0, R_IN + REST + REACH);
-    barFill.addColorStop(0, css.getPropertyValue('--c2').trim());
-    barFill.addColorStop(1, css.getPropertyValue('--c1').trim());
-    barFillState = state;
-  }
-  return barFill;
-}
-// Bars of (nearly) the same opacity share one path and one fill: 48 separate fills cost the device's
-// main thread ~20% of a core while speaking. The path takes each bar's transform as it is added.
-const bucket = new Uint8Array(BARS);
-function drawBars(bars) {
-  const c = CSIZE * DPR / 2;
-  cx.setTransform(1, 0, 0, 1, 0, 0);
-  cx.clearRect(0, 0, corona.width, corona.height);
-  cx.fillStyle = fillFor(document.body.dataset.state || 'idle');
-  for (let i = 0; i < BARS; i++) bucket[i] = bars[i * 2] < .5 ? 0 : Math.max(1, Math.round(bars[i * 2 + 1] * 20));
-  for (let q = 1; q <= 20; q++) {
-    if (!bucket.includes(q)) continue;
-    cx.beginPath();
-    for (let i = 0; i < BARS; i++) {
-      if (bucket[i] !== q) continue;
-      cx.setTransform(COS[i] * DPR, SIN[i] * DPR, -SIN[i] * DPR, COS[i] * DPR, c, c);
-      cx.roundRect(-BAR_W / 2, -R_IN - bars[i * 2], BAR_W, bars[i * 2], BAR_W / 2);
-    }
-    cx.setTransform(DPR, 0, 0, DPR, c, c);   // the radial gradient is centred on the orb
-    cx.globalAlpha = q / 20;
-    cx.fill();
-  }
-  cx.globalAlpha = 1;
-}
-
-// target shape of a state into out; v = sound level 0..1, p = phase (s), t = seconds in this state
-function shapeOf(state, v, p, t, out) {
-  for (let i = 0; i < BARS; i++) {
-    const a = ANG[i], f = i / BARS;
-    let len = REST, alpha = 1;
-    if (state === 'thinking') { len = 6.6 + 28.5 * f * f; alpha = .1 + .9 * f ** 1.6; }
-    else if (state === 'connecting') { len = i % 4 ? 4.2 : 16.5; alpha = i % 4 ? .35 : 1; }
-    else if (state === 'listening') {
-      // a short burst on waking says "I'm here", then the ring follows the voice as one
-      const env = Math.max(v, .5 * Math.max(0, 1 - t / .6) ** 2);
-      const grain = .84 + .16 * Math.sin(a * 5 + p * 3.1) * Math.sin(a * 3 - p * 2.3);
-      len = REST - 1 + 1.2 * Math.sin(a * 4 + p * 1.5) + REACH * env * grain;
-    } else if (state === 'speaking') {
-      const lobe = .5 + .5 * Math.sin(a * 3 - p * 1.3);
-      len = REST + 4 * lobe + REACH * v * (.3 + .7 * lobe);
-      alpha = .6 + .4 * lobe;
-    }
-    out[i * 2] = len;
-    out[i * 2 + 1] = alpha;
-  }
-}
-
-// The mic level (RMS) in decibels, so a quiet voice visibly moves the corona. Measured on the device
-// (2026-11-01, 9 listening turns): room noise -74..-80 dBFS with rare blips to -62, normal speech
-// -60..-42 dBFS. The old linear scale (full at -23 dBFS) moved the corona 1–7% for that speech.
-// Now noise stays 0, a quiet voice (-55) reaches ~30%, a normal one (-45) ~58%, a loud one (-30) 100%.
+/* ---- microphone feedback; the portrait's independent blink animation is in avatar.js ---- */
 const MIC_FLOOR = -66, MIC_FULL = -30;   // dBFS
 const micLevel = rms => Math.min(1, Math.max(0, (20 * Math.log10(rms + 1e-6) - MIC_FLOOR) / (MIC_FULL - MIC_FLOOR)));
-
 const STILL = document.documentElement.classList.contains('still');
-const level = { target: 0, value: 0, phase: 0, raf: 0, last: 0, state: '', since: 0, mix: 1 };
-const isLive = s => s === 'listening' || s === 'speaking';
-function setCorona(state) {
+const level = { target: 0, value: 0, phase: 0, raf: 0, last: 0, state: '' };
+function setVoiceFeedback(state) {
   if (state === level.state) return;
-  // morph from what is on screen; a spinning corona is turned by CSS, so carry its angle into the bars
-  const m = getComputedStyle($('corona')).transform.match(/matrix\(([^,]+),\s*([^,]+)/);
-  const k = m ? Math.round(Math.atan2(+m[2], +m[1]) / (Math.PI * 2) * BARS) : 0;
-  for (let i = 0; i < BARS; i++) {
-    const j = ((i - k) % BARS + BARS) % BARS;
-    from[i * 2] = cur[j * 2]; from[i * 2 + 1] = cur[j * 2 + 1];
-  }
+  cancelAnimationFrame(level.raf);
+  level.raf = 0;
   level.state = state;
-  level.since = performance.now();
-  level.mix = level.last ? 0 : 1;   // the first paint just draws
-  if (!isLive(state)) level.target = 0;
-  if (STILL) {   // screenshots: one fairly loud, settled frame
-    shapeOf(state, isLive(state) ? .7 : 0, 1.2, 9, cur);
-    drawBars(cur);
-    if (isLive(state)) drawLive(.7, 1.2);
-    return;
-  }
-  if (!level.raf) {
+  level.target = level.value = 0;
+  $('micRing').style.transform = '';
+  if (state === 'listening' && !STILL && !document.hidden) {
     level.last = performance.now() - 34;
     level.raf = requestAnimationFrame(levelLoop);
   }
 }
 function levelLoop(now) {
+  if (level.state !== 'listening' || document.hidden) { level.raf = 0; return; }
   level.raf = requestAnimationFrame(levelLoop);
-  if (now - level.last < 33) return;      // ~30 fps is plenty
+  if (now - level.last < 33) return;
   const dt = Math.min(.1, (now - level.last) / 1000);
   level.last = now;
   level.value += (level.target - level.value) * (level.target > level.value ? .55 : .2);
   level.phase += dt * 2.4;
-  const live = isLive(level.state);
-  shapeOf(level.state, level.value, level.phase, (now - level.since) / 1000, tgt);
-  if (level.mix < 1) {
-    level.mix = Math.min(1, level.mix + dt / .4);
-    const e = 1 - (1 - level.mix) ** 3;
-    for (let i = 0; i < tgt.length; i++) cur[i] = from[i] + (tgt[i] - from[i]) * e;
-  } else cur.set(tgt);
-  drawBars(cur);
-  if (live || level.mix < 1) drawLive(level.value, level.phase);   // after live: let the level settle
-  else {
-    cancelAnimationFrame(level.raf);
-    level.raf = 0;
-    level.target = level.value = 0;
-    $('corona').style.transform = $('core').style.transform = $('micRing').style.transform = $('mouth').style.transform = '';
-  }
-}
-// The whole corona layer grows with the level too (compositor only, no repaint): with the longer bars,
-// the tips go from r ≈ 117 px when quiet to ≈ 190 px when loud. Core, mouth, mic ring and the wave follow.
-function drawLive(v, p) {
-  $('corona').style.transform = `scale(${(1 + v * .16).toFixed(3)})`;
-  $('core').style.transform = `scale(${(1 + v * .13).toFixed(3)})`;
-  $('mouth').style.transform = `scaleY(${(.55 + v * 1.6).toFixed(3)})`;
-  if (level.state === 'listening') $('micRing').style.transform = `scale(${(1 + v * .16).toFixed(3)})`;   // invisible otherwise
+  const v = level.value, p = level.phase;
+  $('micRing').style.transform = `scale(${(1 + v * .16).toFixed(3)})`;
   const pending = $('pending');
   if (pending) pending.querySelectorAll('.wave b').forEach((b, i) => { b.style.transform = `scaleY(${(.18 + v * (.5 + .5 * Math.sin(p * 3 + i * 1.3))).toFixed(3)})`; });
 }
+document.addEventListener('visibilitychange', () => {
+  const state = level.state;
+  level.state = '';
+  setVoiceFeedback(state);
+});
 
-/* ---- status: orb, title, hint, buttons ---- */
+/* ---- status: title, hint, buttons ---- */
 function modelName() {
   const cur = ui.models.current;
   return cur ? cur.label : '模型';
@@ -192,11 +84,11 @@ function renderStatus() {
   const shown = shownState();
   document.body.dataset.state = shown;
   const text = {
-    idle: ['说<em>「小麦小麦」</em>', connected ? '对话还在，唤醒后可以接着聊' : '或者点麦克风；按住可以直接说'],
+    idle: ['说<em>「小葵」</em>', connected ? '对话还在，唤醒后可以接着聊' : '或者点麦克风；按住可以直接说'],
     connecting: ['正在连接…', '连上小智网关后就开始听'],
     listening: ui.ptt ? ['松开<em>发送</em>', '说完松开手指'] : ['我在听', '说完停一下，我就开始回答'],
     thinking: [`<em>${esc(modelName())}</em> 正在思考`, '复杂的问题可能要想一会儿'],
-    speaking: ['正在回答', '喊「小麦小麦」或点打断就能停下'],
+    speaking: ['正在回答', '喊「小葵」或点打断就能停下'],
   }[shown] || ['', ''];
   if (ui.status.recognising && !ui.ptt) text.splice(0, 2, '正在识别', '你说完了，正在把话转成文字');
   const micOff = ui.status.mic === false;
@@ -207,7 +99,7 @@ function renderStatus() {
   document.body.classList.toggle('sleeping', sleeping);
   $('reportText').textContent = reports > 1 ? `有 ${reports} 条待汇报` : '有一条待汇报';
   if (micOff && shown === 'idle') text.splice(0, 2, '麦克风已关', '拨开机身侧面的开关就能说话');
-  else if (reports && shown === 'idle') text[1] = '有待汇报：点右上角收听，或叫一声「小麦小麦」';
+  else if (reports && shown === 'idle') text[1] = '有待汇报：点右上角收听，或叫一声「小葵」';
   else if (sleeping && shown === 'idle' && !connected) text[1] = '睡眠时段：汇报不会自动念';
   $('title').innerHTML = text[0];
   $('hint').textContent = text[1];
@@ -219,12 +111,11 @@ function renderStatus() {
   link.querySelector('span').textContent = connected ? '对话中' : '待机';
   renderSide();
   renderPending();
-  setCorona(shown);
+  setVoiceFeedback(shown);
   renderSettings();
   renderBright();
   renderScreenOff();
   renderVol();
-  renderUpdate();
 }
 
 /* ---- models ---- */
@@ -338,7 +229,7 @@ function renderBright() {
   $('brightRange').style.setProperty('--fill', b.level + '%');
   $('brightNum').textContent = b.level + '%';
   $('brightNote').textContent = b.dimmed ? '睡眠时段内屏幕调暗了；拖一下滑条，这次时段就按你调的亮度'
-    : '熄屏再亮也保持这个亮度；也可以说「小麦小麦，屏幕亮一点」「调到最亮」';
+    : '熄屏再亮也保持这个亮度；也可以说「小葵，屏幕亮一点」「调到最亮」';
 }
 async function sendBright(body) {
   if (DEMO) { ui.status.brightness = { level: body.level, dimmed: false }; return; }
@@ -488,13 +379,13 @@ function left(t) {
 function alarmRow(v) {
   if (v.kind === 'timer') {
     return [`<span data-left="${v.at}">${left(v.at)}</span>${v.label ? ' ' + esc(v.label) : ''}`,
-            `倒计时，${hhmm(v.at)} 响${v.snoozed ? ' · 再睡中' : ''}`];
+            `倒计时，${hhmm(v.at)} 响${v.snoozed ? ' ， 再睡中' : ''}`];
   }
   const sub = [dayText(v.at)];
   if (v.repeat) sub.push(esc(v.repeat));
   if (v.snoozed) sub.push('再睡中');
   if (v.kind === 'reminder') sub.push(v.spoken ? '到点念出来' : v.spoken === false ? '只响铃（没合成出语音）' : '正在合成语音');
-  return [`${hhmm(v.at)}${v.label ? ' ' + esc(v.label) : ''}`, sub.join(' · ')];
+  return [`${hhmm(v.at)}${v.label ? ' ' + esc(v.label) : ''}`, sub.join(' ， ')];
 }
 function renderAlarms() {
   const a = ui.alarms;
@@ -520,7 +411,7 @@ function renderAlarms() {
   // home: the missed ones (newest first, at most 3 shown) until 知道了
   $('missedBox').hidden = !a.missed.length;
   $('missedList').innerHTML = a.missed.slice(0, 3).map(m =>
-    `<div class="mh"><b>${dayText(m.at)} ${hhmm(m.at)}</b>${KIND_ICON[m.kind] || ''}${m.label ? ' · ' + esc(m.label) : ''}` +
+    `<div class="mh"><b>${dayText(m.at)} ${hhmm(m.at)}</b>${KIND_ICON[m.kind] || ''}${m.label ? ' ， ' + esc(m.label) : ''}` +
     `<small>${m.why === 'off' ? '设备关着' : m.kind === 'reminder' ? '提醒了 3 分钟没人停' : '响了 10 分钟没人停'}</small></div>`).join('') +
     (a.missed.length > 3 ? `<div class="mh more">还有 ${a.missed.length - 3} 条</div>` : '');
   renderAlarmVol();
@@ -565,142 +456,6 @@ $('ringSnooze').addEventListener('click', () => {
   if (DEMO) return post('/api/alarms/snooze');
   postJson('/api/alarms/snooze').then(r => { if (r.ok) toast('好的，10 分钟后再叫你'); });   // postJson shows the error
 });
-
-/* ---- settings: software update (update.py: the root updater installs, the page only asks) ---- */
-const UPD_STAGE = { preparing: '正在准备', downloading: '正在下载', installing: '正在安装',
-                    testing: '正在重启并自检', rolling_back: '自检没通过，正在退回' };
-let updArmed = 0;   // first tap on 更新 arms it, a second one within 5 s installs
-let updStarting = 0;   // request sent, the updater hasn't reported yet (it takes a few seconds to start)
-const mb = n => (n / 1048576).toFixed(n < 10485760 ? 1 : 0) + ' MB';
-function ago(t) {
-  const m = Math.max(0, Math.round((Date.now() / 1000 - t) / 60));
-  return m < 2 ? '刚刚' : m < 60 ? `${m} 分钟前` : m < 1440 ? `${Math.round(m / 60)} 小时前` : `${Math.round(m / 1440)} 天前`;
-}
-// After an update: the state it left, both versions, whatever this run installed. One tap installs
-// the system layer and then the client, and an older updater keeps only the last one's message
-// (已更新到 0.1.5); the versions themselves are always right.
-function updDoneText(u, job) {
-  const sys = (u || {}).system || {};
-  if (!sys.current || !ui.version) return job.message || '更新完成';
-  return `更新完成：系统层 ${sys.current} · 客户端 ${ui.version}`
-    + (/重启设备后生效/.test(job.message || '') ? '，部分改动重启设备后生效' : '');
-}
-function updParts(u) {
-  // what one tap installs, in the updater's order: the system layer (shell, audio...) first
-  const parts = [], sys = u.system || {}, sa = sys.available;
-  if (sa && !(sa.missing || []).length) parts.push({ key: 'system', name: '系统层', ...sa });
-  if (u.available) parts.push({ key: 'client', name: '客户端', ...u.available });
-  return parts;
-}
-function renderUpdate() {
-  const u = ui.update || {}, job = u.job || {}, sys = u.system || {};
-  const parts = updParts(u), avail = parts.length > 0;
-  const busy = job.state in UPD_STAGE;
-  // between the confirming tap and the updater's first report: don't show the 更新 button again
-  // (it looks like the tap missed). Ends when the updater reports (busy, or a result newer than the
-  // tap) or after 30 s of silence.
-  if (updStarting && (busy || (job.time || 0) * 1000 > updStarting - 2000 || Date.now() - updStarting > 30000)) updStarting = 0;
-  const starting = !!updStarting;
-  const recent = !!job.time && Date.now() / 1000 - job.time < 86400;
-  const failed = !busy && recent && (job.state === 'failed' || job.state === 'rolled_back');
-  const cur = !ui.version ? '' : sys.current ? `客户端 ${ui.version} · 系统层 ${sys.current}` : `当前版本 ${ui.version}`;
-  // a system layer this image can't take (it needs packages only a newer image has)
-  const blocked = sys.available && (sys.available.missing || []).length
-    ? `系统层 ${sys.available.version} 要重刷新镜像才能装` : '';
-  let title = '软件更新', text, bad = false, label = '', notes = '';
-  if (!u.enabled) text = (cur ? cur + '。' : '') + '这台设备还没装更新服务';
-  else if (starting) {
-    title = '正在开始更新…';
-    text = '正在连接更新服务器，请稍等';
-  } else if (busy) {
-    const what = job.component === 'system' ? '系统层' : '客户端';
-    title = `正在更新${what} ${job.version}`;
-    const pct = job.state === 'downloading' && job.progress != null ? ` ${Math.round(job.progress * 100)}%` : '';
-    text = `${UPD_STAGE[job.state]}${pct}。` + (job.component === 'system' ? '屏幕可能会闪一下，' : '')
-      + '语音助手会暂停一会儿，请不要断电';
-  } else if (avail) {
-    title = '有新版本 ' + parts.map(p => `${p.name} ${p.version}`).join(' · ');
-    text = failed ? job.message + '。可以再试一次'
-      : `${cur}，下载约 ${mb(parts.reduce((n, p) => n + (p.size || 0), 0))}` + (blocked ? `。${blocked}` : '');
-    bad = failed;
-    if (Date.now() - updArmed < 5000) {
-      // waiting for the confirming tap: the hint stays on the card for those 5 s
-      bad = false;
-      text = `更新时语音助手会停一会儿（约 ${parts.length > 1 ? 2 : 1} 分钟）`
-        + (parts.some(p => p.key === 'system') ? '，屏幕可能会闪一下' : '') + '。再点一下「确认更新」开始';
-    }
-    notes = parts.map(p => (parts.length > 1 ? `<li class="h">${p.name} ${esc(p.version)}</li>` : '')
-                          + (p.notes || []).map(n => `<li>${esc(n)}</li>`).join('')).join('');
-    label = Date.now() - updArmed < 5000 ? '确认更新' : '更新';
-  } else {
-    text = recent && job.state === 'done' ? `${updDoneText(u, job)}，已是最新`
-      : failed ? job.message
-      : u.check_error ? `${cur}。${u.check_error}`
-      : blocked ? `${cur}。${blocked}`
-      : `${cur}，已是最新` + (u.checked ? `（${ago(u.checked)}检查过）` : '');
-    bad = failed || (!!u.check_error && !(recent && job.state === 'done'));
-    label = '检查更新';
-  }
-  $('gearDot').classList.toggle('on', avail && !busy && !starting);
-  $('updTitle').textContent = title;
-  $('updSub').textContent = text;
-  $('updSub').classList.toggle('bad', !!bad);   // toggle(x, undefined) would flip it
-  $('updNotes').innerHTML = notes;
-  const btn = $('updBtn');
-  btn.hidden = !label;
-  btn.textContent = label;
-  btn.disabled = avail && ui.status.state !== 'idle';   // not in the middle of a conversation
-  $('upd').classList.toggle('new', avail && !busy && !starting);
-  $('updBar').hidden = !busy && !starting;
-  $('updBar').classList.toggle('busy', starting || (busy && job.state !== 'downloading'));
-  $('updFill').style.transform = job.state === 'downloading' ? `scaleX(${job.progress || 0})` : '';
-}
-function updateFinished(job) {
-  // once per install, also when the page reloaded because the client restarted with the new version
-  if (!job || !(job.state === 'done' || job.state === 'rolled_back' || job.state === 'failed')) return;
-  if (Date.now() / 1000 - job.time > 300) return;
-  try { if (localStorage.getItem('updShown') === String(job.time)) return; localStorage.setItem('updShown', String(job.time)); } catch (e) { /* no storage */ }
-  toast(job.state === 'done' ? updDoneText(ui.update, job) : job.message, job.state === 'done' ? '' : 'error');
-}
-$('updBtn').addEventListener('click', async () => {
-  const parts = updParts(ui.update || {});
-  if (!parts.length) {
-    if (DEMO) return toast('正在检查更新…');
-    const r = await (await post('/api/update/check'))?.json?.();
-    return toast(r && r.ok ? '正在检查更新…' : '这台设备还没装更新服务', r && r.ok ? '' : 'error');
-  }
-  const sys = parts.find(p => p.key === 'system'), cli = parts.find(p => p.key === 'client');
-  if (Date.now() - updArmed > 5000) {
-    updArmed = Date.now();
-    renderUpdate();
-    return setTimeout(renderUpdate, 5100);
-  }
-  updArmed = 0;
-  updStarting = Date.now();
-  renderUpdate();
-  setTimeout(renderUpdate, 30100);
-  if (DEMO) return;   // ?demo: shows the waiting state (and the button again after 30 s)
-  const r = await (await post('/api/update/install', { version: cli ? cli.version : '', system: sys ? sys.version : '' }))?.json?.();
-  if (!r || !r.ok) {
-    updStarting = 0;
-    renderUpdate();
-    toast((r && r.error) || '没能开始更新', 'error');
-  }
-});
-if (DEMO !== null) {
-  // ?demo&upd=new|sys|both|busy|failed: preview the update card (opens the settings sheet)
-  const kind = new URLSearchParams(location.search).get('upd');
-  const avail = { version: '0.2.0', size: 9.4 * 1048576, notes: ['聊天页的光球加了表情', '修好了睡眠时段跨午夜时不生效'] };
-  const savail = { version: '0.3.0', size: 0.2 * 1048576, notes: ['设置页能切换 WiFi', '可以当蓝牙音箱'], missing: [] };
-  const now = Date.now() / 1000;
-  ui.version = '0.1.0';
-  ui.update = { enabled: true, checked: now - 3600, available: kind && kind !== 'sys' ? avail : null,
-                system: { current: '0.2.0', available: kind === 'sys' || kind === 'both' ? savail : null },
-                job: kind === 'busy' ? { state: 'downloading', version: '0.3.0', progress: .42, time: now, component: 'system' }
-                   : kind === 'failed' ? { state: 'rolled_back', version: '0.3.0', time: now, component: 'system',
-                                           message: '系统层 0.3.0 没装成功（屏幕界面没有启动起来），已退回 0.2.0' } : null };
-  if (kind) $('settings').classList.add('on');
-}
 
 /* ---- settings: chat history (kept on the hub; clearing also clears the hub's copy) ---- */
 let clearArmed = 0, memArmed = 0;   // first tap arms a button, a second one within 5 s clears
@@ -751,9 +506,84 @@ async function renderIp() {
     try { ip = (await (await fetch('/api/network')).json()).ip; } catch (e) { ip = null; }
   }
   $('ipNum').textContent = ip || '未联网';
-  $('ipSub').textContent = ip ? `在同一网络的电脑上打开 http://${ip}:16688/admin 进网关后台` : '连上 WiFi 后这里显示设备的地址';
+  $('ipSub').textContent = ip ? '' : '尚未连接网络';
 }
-$('btnSettings').addEventListener('click', () => { $('settings').classList.add('on'); renderIp(); renderWifiCard(); });
+$('btnSettings').addEventListener('click', () => { $('settings').classList.add('on'); renderIp(); renderWifiCard(); loadServer(); });
+
+/* ---- settings: remote Hub ---- */
+let serverBusy = false, serverDirty = false;
+const serverValues = () => ({ hub_http: $('serverHttp').value.trim(), hub_ws: $('serverWs').value.trim(),
+  pairing_token: $('serverPairingToken').value.trim(), clear_pairing: $('serverPairingClear').checked });
+function serverMessage(text, kind = '') {
+  $('serverResult').textContent = text;
+  $('serverResult').dataset.kind = kind;
+}
+function serverWorking(busy, action) {
+  serverBusy = busy;
+  $('serverSave').disabled = $('serverCheck').disabled = busy;
+  $('serverHttp').disabled = $('serverWs').disabled = $('serverPairingToken').disabled = $('serverPairingClear').disabled = busy;
+  $('serverState').textContent = busy ? action : '';
+}
+async function loadServer() {
+  if (serverBusy || serverDirty) return;
+  try {
+    const r = await fetch('/api/server');
+    if (!r.ok) throw new Error();
+    const data = await r.json();
+    // Do not overwrite text entered while this request was in flight.
+    if (serverDirty) return;
+    $('serverHttp').value = data.hub_http;
+    $('serverWs').value = data.hub_ws;
+    $('serverPairingToken').value = '';
+    $('serverPairingClear').checked = false;
+    $('serverPairingState').textContent = data.pairing_configured ? '已配置' : '未配置';
+  } catch (_) { serverMessage('无法读取服务器配置，请重新打开设置', 'error'); }
+}
+async function checkServer() {
+  if (serverBusy) return;
+  if (!$('serverForm').reportValidity()) return;
+  serverWorking(true, '正在检测');
+  serverMessage('');
+  try {
+    const r = await fetch('/api/server/check', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(serverValues()) });
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.error || '检测失败');
+    serverMessage(`${data.voice.message}；${data.http.message}`, data.connected ? 'ok' : 'warning');
+  } catch (e) { serverMessage(e.message || '客户端没有响应', 'error'); }
+  finally { serverWorking(false); }
+}
+for (const id of ['serverHttp', 'serverWs', 'serverPairingToken']) $(id).addEventListener('input', () => {
+  serverDirty = true;
+  if (id === 'serverHttp') $('serverWs').value = ''; // new HTTP host must never keep the old voice host
+  if (id === 'serverPairingToken') $('serverPairingClear').checked = false;
+  serverMessage('');
+});
+$('serverPairingClear').addEventListener('change', () => {
+  serverDirty = true;
+  if ($('serverPairingClear').checked) $('serverPairingToken').value = '';
+  serverMessage('');
+});
+$('serverCheck').addEventListener('click', checkServer);
+$('serverForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  if (serverBusy || !$('serverForm').reportValidity()) return;
+  serverWorking(true, '正在保存');
+  try {
+    const r = await fetch('/api/server', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(serverValues()) });
+    const data = await r.json();
+    if (!r.ok || !data.ok) throw new Error(data.error || '保存失败');
+    $('serverHttp').value = data.hub_http;
+    $('serverWs').value = data.hub_ws;
+    $('serverPairingToken').value = '';
+    $('serverPairingClear').checked = false;
+    $('serverPairingState').textContent = data.pairing_configured ? '已配置' : '未配置';
+    serverDirty = false;
+    toast('连接设置已保存');
+    serverWorking(false);
+    await checkServer();
+  } catch (e) { serverMessage(e.message || '客户端没有响应', 'error'); }
+  finally { serverWorking(false); }
+});
 /* ---- settings: WiFi (the kiosk shell scans and joins: thinksmart-kiosk.py, the same code as its welcome page) ---- */
 // The shell answers the client's page only on the device's own screen (127.0.0.1); window.thinksmartShell
 // says it can. An older shell can't: the card then only says so.
@@ -810,12 +640,12 @@ const signalText = s => s > 75 ? '信号很好' : s > 50 ? '信号良好' : s > 
 
 async function renderWifiCard() {
   if (!shellWifi && DEMO === null) {
-    $('wifiSub').textContent = '这台设备的系统层版本较旧，不能在这里切换 WiFi。在上面的「软件更新」里更新系统层后就可以。';
+    $('wifiSub').textContent = '当前显示环境不支持切换 WiFi';
     $('wifiBtn').hidden = true;
     return;
   }
   const r = await shellCall('wifi_status');
-  $('wifiSub').textContent = !r.ok ? '读不到 WiFi 状态' : r.ssid ? `已连接 ${r.ssid} · ${signalText(r.signal)}` : '没有连接 WiFi';
+  $('wifiSub').textContent = !r.ok ? '读不到 WiFi 状态' : r.ssid ? `已连接 ${r.ssid} ， ${signalText(r.signal)}` : '没有连接 WiFi';
 }
 function openWifi() {
   $('wifi').classList.add('on');
@@ -877,9 +707,9 @@ function wifiJoin(net, hidden) {
   const t = wifi.target, q = net ? signalText(net.signal) : '';
   $('wJoinTitle').textContent = hidden ? '添加隐藏网络' : t.ssid;
   $('wJoinHint').textContent = hidden ? '输入网络名称和密码（没有密码就留空），然后点键盘上的「连接」'
-    : t.mode === 'info' ? '已连接 · ' + q
-    : t.mode === 'saved' ? '已保存的网络 · ' + q + '，点「连接」用保存的密码连接'
-    : t.secure ? '加密网络 · ' + q + '，输入密码后点键盘上的「连接」' : '开放网络 · ' + q;
+    : t.mode === 'info' ? '已连接 ， ' + q
+    : t.mode === 'saved' ? '已保存的网络 ， ' + q + '，点「连接」用保存的密码连接'
+    : t.secure ? '加密网络 ， ' + q + '，输入密码后点键盘上的「连接」' : '开放网络 ， ' + q;
   wifiMsg('');
   wifiPane('wJoin');
   renderJoin();
@@ -992,7 +822,7 @@ $('wPw').addEventListener('keydown', e => {
 
 /* ---- settings: Bluetooth speaker (bt.py; pairing only in the 3-minute "add a phone" window) ---- */
 function btPlaying(d) {
-  const song = [d.title, d.artist].filter(Boolean).join(' · ');
+  const song = [d.title, d.artist].filter(Boolean).join(' ， ');
   return song || '正在播放';
 }
 function renderBluetooth() {
@@ -1000,7 +830,7 @@ function renderBluetooth() {
   const on = !!(b && b.available && b.enabled);
   const live = b && b.enabled && (b.devices || []).find(d => d.streaming);
   document.body.classList.toggle('bt-playing', !!live);
-  $('btChipText').textContent = live ? `${live.name} · ${btPlaying(live)}` : '';
+  $('btChipText').textContent = live ? `${live.name} ， ${btPlaying(live)}` : '';
   if (!b) return;
   $('btSwitch').setAttribute('aria-checked', String(on));
   $('btSwitch').disabled = !b.available;
@@ -1100,7 +930,7 @@ function renderHead() {
   $('headLogo').src = logoSrc(m);
   $('headTitle').textContent = m ? `与 ${m.label} 的对话` : '对话';
   const n = ui.thread.messages.length;
-  $('headMeta').textContent = n ? `${n} 条消息 · ${ui.status.connected ? '对话中' : '记录已保存'}` : '新对话';
+  $('headMeta').textContent = n ? `${n} 条消息 ， ${ui.status.connected ? '对话中' : '记录已保存'}` : '新对话';
 }
 
 function fmtTime(t) {
@@ -1227,19 +1057,12 @@ const handlers = {
     switching = null;
     for (const k in seenThreads) delete seenThreads[k];
     seenThreads[s.thread.entry] = s.thread.messages;
-    if (s.update) { ui.version = s.version; ui.update = s.update; }   // the demo's snapshots have none
     if (s.alarms) ui.alarms = s.alarms;
     if (s.bluetooth) ui.bluetooth = s.bluetooth;
     renderModels(); renderThread(); renderStatus(); renderAlarms(); renderBluetooth();
-    updateFinished((s.update || {}).job);
   },
   power(p) {
     $('powerOff').classList.toggle('on', p.state === 'off');
-  },
-  update(u) {
-    ui.update = u;
-    renderUpdate();
-    updateFinished(u.job);
   },
   state(s) {
     ui.status = s; renderStatus(); markLive(); renderHead();
@@ -1420,7 +1243,7 @@ const demo = DEMO === null ? null : (() => {
     ['volume', 2400, () => showVolume(60)],
     ['ptt', 2600, () => { pttStart(); state('listening'); }],
     [null, 400, () => { pttEnd(); say('user', '用一句话介绍一下你自己'); state('thinking'); }],
-    [null, 1800, () => sentence('我是小麦，住在这块屏幕里的语音助手，有问题随时叫我。')],
+    [null, 1800, () => sentence('我是小葵，住在这块屏幕里的语音助手，有问题随时叫我。')],
     [null, 3200, () => { done(); state('idle'); }],
     [null, 3000, () => { state('idle', false); toast('对话已结束，聊天记录已保存'); }],
   ];

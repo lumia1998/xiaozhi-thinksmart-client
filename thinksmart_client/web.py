@@ -6,7 +6,7 @@ import time
 
 from aiohttp import web
 
-from . import __version__, update
+from . import __version__, server_settings
 from .app import ROOT, Client, local_ip
 
 log = logging.getLogger(__name__)
@@ -24,7 +24,7 @@ def make_app(client: Client):
         return web.FileResponse(WEB / 'v2' / 'index.html', headers={'Cache-Control': 'no-cache'})
 
     async def index_v1(_request):
-        return web.FileResponse(WEB / 'index.html', headers={'Cache-Control': 'no-cache'})
+        raise web.HTTPFound('/')
 
     async def events(request):
         resp = web.StreamResponse(headers={'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache'})
@@ -32,8 +32,7 @@ def make_app(client: Client):
         q = asyncio.Queue()
         client.events.queues.add(q)
         try:
-            q.put_nowait(('snapshot', {**client.snapshot(), 'build': BUILD, 'version': __version__,
-                                       'update': update.read()}))
+            q.put_nowait(('snapshot', {**client.snapshot(), 'build': BUILD}))
             while True:
                 try:
                     event, data = await asyncio.wait_for(q.get(), timeout=15)
@@ -152,22 +151,55 @@ def make_app(client: Client):
     async def network(_request):
         return web.json_response({'ip': local_ip()})
 
-    async def update_check(_request):
-        return web.json_response({'ok': update.request('check')})
+    async def server_get(_request):
+        return web.json_response({k: client.cfg[k] for k in ('hub_http', 'hub_ws')}
+                                 | {'pairing_configured': bool(client.cfg.get('pairing_token'))})
 
-    async def update_install(request):
-        if client.state != 'idle':
-            return web.json_response({'ok': False, 'error': '对话结束后再更新'}, status=409)
-        body = await request.json()
-        return web.json_response({'ok': update.request('install', str(body.get('version') or ''),
-                                                       str(body.get('system') or ''))})
+    async def server_change(request):
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError('请求格式不正确')
+            pairing_token = body.get('pairing_token') if 'pairing_token' in body else None
+            clear_pairing = body.get('clear_pairing', False)
+            if pairing_token is not None and not isinstance(pairing_token, str):
+                raise ValueError('配对令牌格式不正确')
+            if not isinstance(clear_pairing, bool):
+                raise ValueError('清除选项格式不正确')
+            values = await client.set_server(
+                body.get('hub_http'), body.get('hub_ws', ''),
+                pairing_token, clear_pairing,
+            )
+            return web.json_response({'ok': True, **values})
+        except (ValueError, TypeError) as e:
+            return web.json_response({'ok': False, 'error': str(e)}, status=400)
+        except OSError:
+            return web.json_response({'ok': False, 'error': '保存失败，请检查设备存储空间'}, status=500)
 
-    watchers = []   # keeps the task referenced
+    async def server_check(request):
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError('请求格式不正确')
+            values = server_settings.normalize(body.get('hub_http'), body.get('hub_ws', ''))
+            pairing_token = body.get('pairing_token')
+            clear_pairing = body.get('clear_pairing', False)
+            if pairing_token is not None and not isinstance(pairing_token, str):
+                raise ValueError('配对令牌格式不正确')
+            if not isinstance(clear_pairing, bool):
+                raise ValueError('清除选项格式不正确')
+            pairing_token = (pairing_token or '').strip()
+            if pairing_token and (len(pairing_token) > 1000 or any(c.isspace() or ord(c) < 32 for c in pairing_token)):
+                raise ValueError('配对令牌格式不正确')
+        except (ValueError, TypeError) as e:
+            return web.json_response({'ok': False, 'error': str(e)}, status=400)
+        check_cfg = dict(client.cfg)
+        if clear_pairing:
+            check_cfg['pairing_token'] = ''
+        elif pairing_token:
+            check_cfg['pairing_token'] = pairing_token
+        return web.json_response({'ok': True, **await server_settings.check(values, check_cfg, client.hub)})
 
-    async def watch_updates(_app):
-        watchers.append(asyncio.create_task(update.watch(client.events.publish)))
-
-    app.on_startup.append(watch_updates)
     app.router.add_get('/', index)
     app.router.add_get('/v2', index)
     app.router.add_get('/v1', index_v1)
@@ -195,8 +227,9 @@ def make_app(client: Client):
     app.router.add_get('/api/health', health)
     app.router.add_get('/api/network', network)
     app.router.add_post('/api/power-off', power_off)
-    app.router.add_post('/api/update/check', update_check)
-    app.router.add_post('/api/update/install', update_install)
+    app.router.add_get('/api/server', server_get)
+    app.router.add_post('/api/server', server_change)
+    app.router.add_post('/api/server/check', server_check)
     app.router.add_static('/static/', WEB)
 
     async def revalidate(request, response):

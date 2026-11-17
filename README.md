@@ -42,6 +42,7 @@
 - `POST /api/bluetooth`：`{"enabled": bool}` 蓝牙音箱开关（存用户配置 `bluetooth`，关掉就让蓝牙断电），`{"window": bool}` 打开或关掉 3 分钟的「添加手机」，`{"remove": "地址"}` 忘记一台手机，`{"disconnect": "地址"}` 断开。状态在事件 `bluetooth`（快照里也有）：`available`、`enabled`、`powered`、`window`（剩余秒数）、`name`（手机上看到的名字）、`direct`（手机的声音绕过了客户端：系统层太旧）、`devices`（`address`、`name`、`paired`、`connected`、`streaming`、`title`、`artist`）
 - `POST /api/power-off`：关机（`systemctl halt`，插着电也不会自己重新开机，屏幕变黑后等 10 秒再拔电源；正在更新时不执行）。页面先收到 `power {"state": "off"}` 显示「正在关机」
 - `POST /api/history/clear {}` 或 `{"memory_only": true}`：清除聊天记录（转给服务端的 `/kiosk/chat/clear`，只清服务端本机存的所有模型的记录和总结记忆，Claude Code、Grok Bot 自己的会话不动；`memory_only` 只清记忆）。聊天页的记录来自服务端存的 `GET /kiosk/chat/history`（每个模型最近 50 条），没连着时载入，断开、重启后还在；说「清除聊天记录」确认后服务端发 `{"type": "chat_history", "state": "cleared"}`，页面清空
+- 配对校验：展示屏设置页可粘贴后台生成的一次性配对令牌。令牌只保存在客户端用户配置并以握手请求头发送，页面读取设置时只显示“已配置/未配置”，不会回显令牌；清除后需要重新配对。
 
 ## 第三方
 

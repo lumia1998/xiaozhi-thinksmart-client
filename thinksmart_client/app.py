@@ -10,9 +10,9 @@ States shown to the page: idle, connecting, listening, thinking, speaking.
   The same while the hub is still recognising what was said (the wake word is listened for again
   once its VAD says the user stopped) or thinking: the question is dropped, whatever of that turn
   still arrives (its text, its reply) is ignored, and the mic opens for a new one at once.
-- After a reply the microphone stays open for follow_up_seconds, then stops uploading.
-  The connection itself stays until the hub closes it (no speech for ~2 minutes, an exit
-  word, the end button), so waking again within that time keeps the conversation.
+- After a reply the microphone stays open for follow_up_seconds. The device closes the
+  connection after conversation_idle_seconds of user silence, including when upload stopped.
+  Recognition, model/tool work and reply playback do not count toward that timeout.
 - The hub keeps every model's conversation on disk (data/chat.db) and gives the next connection
   its recent part, so the page's threads survive a closed connection and a restart: they are loaded
   from the hub (/kiosk/chat/history) when not connected. Clearing them (settings, or saying
@@ -42,10 +42,11 @@ from pathlib import Path
 import aiohttp
 import numpy as np
 
-from . import alarms, bt, config, mcp, sleep, update, wake_verify
+from . import alarms, bt, config, mcp, sleep, wake_verify, server_settings
 from .audio import OUT_RATE, Audio, load_wav
 from .device import DIM_LEVEL, Keys, Screen, normalize_screen_off
 from .hub import Hub
+from .silence import SilenceTimer
 from .kws import Kws
 from .opus import Decoder, Encoder
 
@@ -61,9 +62,6 @@ SPEECH_RMS = 0.005
 # halted it stays dark with the file systems unmounted, so the cable can be pulled safely
 HALT = ('sudo', '-n', 'systemctl', 'halt')
 HALT_AFTER = 3           # seconds to read "正在关机 … 等 10 秒再拔" before the screen goes dark
-UPDATE_BUSY = ('preparing', 'downloading', 'installing', 'testing', 'rolling_back')
-# installing for a page request, or finishing an interrupted one at boot (self-test, rollback)
-UPDATE_UNITS = ('thinksmart-update-run.service', 'thinksmart-update-boot.service')
 MAX_LISTEN = 60          # seconds: one wake never keeps the mic open longer (a TV could otherwise)
 RECOGNITION_WAIT = 15    # seconds to wait for the hub's text after the user stops (long sentences)
 NORMAL_STOP_TAIL = 0.6   # a normal "tts stop" leaves less than this queued; more means aborted
@@ -131,7 +129,6 @@ def overlay(base, extra, at):
     return np.clip(out, -1, 1)
 
 
-ZAI_AT = 0.15   # seconds into the wake chime: just after its second note (0.09 s)
 C5, E5, G5, A5, B5, C6, D6, E6 = 523.25, 659.25, 783.99, 880.0, 987.77, 1046.5, 1174.66, 1318.5
 
 
@@ -170,6 +167,7 @@ class Events:
 class Client:
     def __init__(self, cfg):
         self.cfg = cfg
+        self.silence = SilenceTimer(cfg.get('conversation_idle_seconds', 20))
         self.events = Events()
         self.loop = None
         self.state = 'idle'
@@ -209,16 +207,11 @@ class Client:
         self.backlog = None           # mic blocks since a wake word hit, uploaded once listening starts
         self.audio = Audio(self._on_block)
         self.hub = Hub(cfg['hub_ws'], cfg['device_id'], cfg['client_id'], cfg['token'],
-                       self._on_json, self._on_audio, self._on_closed)
-        sounds = ROOT / 'web' / 'sounds'
-        # Wake: two rising marimba notes; goodbye is the same two falling
+                       self._on_json, self._on_audio, self._on_closed, cfg.get('pairing_token', ''))
+        # Local wake feedback is a neutral chime; spoken greetings use the Hub's selected TTS.
         self.sounds = {'wake': marimba([G5, D6], 0.09), 'bye': marimba([D6, G5], 0.12, 0.16),
                        'miss': marimba([E6, C6], 0.12, 0.16), 'error': marimba([A5, E5, C5], 0.14),
                        'report': marimba([G5, B5, D6], 0.08)}
-        if (sounds / 'zai.wav').exists():
-            # the one-character "在" comes in as the second note rings, over its tail: played after
-            # the whole chime it came ~0.4 s later
-            self.sounds['wake'] = overlay(self.sounds['wake'], load_wav(sounds / 'zai.wav'), ZAI_AT)
         self.speech_end = 0.0         # monotonic: last time the user was heard talking
         self.tools_listed = asyncio.Event()   # the hub asked for our device tools on this connection
         self.connecting = asyncio.Lock()      # one connection: a second wake while connecting waits for it
@@ -270,8 +263,8 @@ class Client:
         self._apply_sleep()
         asyncio.create_task(self._sender())
         asyncio.create_task(self._ticker())
-        asyncio.create_task(self._model_poller())
-        asyncio.create_task(self._report_poller())
+        self.hub_pollers = [asyncio.create_task(self._model_poller()),
+                            asyncio.create_task(self._report_poller())]
         asyncio.create_task(self._alarm_loop())
         await self.bt.start()
         asyncio.create_task(self._bluetooth_loop())
@@ -290,7 +283,7 @@ class Client:
             if self.vad_ended:
                 self.uploading = False   # keep what follows for the new question, not the old one
             # keep what follows: checking the hit, the chime and connecting take a moment, and
-            # "小麦小麦，今天..." is often said in one go
+            # "小葵，今天..." is often said in one go
             self.backlog = []
             audio = self.kws.recent()
             self.loop.call_soon_threadsafe(lambda: asyncio.create_task(self.voice_wake(hit, audio)))
@@ -316,6 +309,8 @@ class Client:
     # ---- state ----
 
     def set_state(self, state):
+        if state not in ('idle', 'listening'):
+            self.silence.reset()
         self.audio.aec_hold = self.hub.connected or self.state == 'connecting'
         if state != self.state:
             self.state = state
@@ -351,13 +346,77 @@ class Client:
             self.set_state(self.state)
 
     def health(self):
-        """For the updater's self-test after installing a version (thinksmart-update)."""
+        """Audio streams and successful recent Hub HTTP responses."""
         return {'audio': bool(self.audio._streams) and all(s.active for s in self.audio._streams),
                 'hub': self.hub_seen > 0 and time.monotonic() - self.hub_seen < 30}
 
     def snapshot(self):
         return {'status': self.status(), 'models': self.models, 'alarms': self.alarm_view(), 'bluetooth': self.bt.view(),
                 'thread': {'entry': self.view_entry(), 'messages': self.threads.get(self.view_entry(), [])}}
+
+    async def set_server(self, http, websocket='', pairing_token=None, clear_pairing=False):
+        values = server_settings.normalize(http, websocket)
+        if pairing_token is not None and not isinstance(pairing_token, str):
+            raise ValueError('配对令牌格式不正确')
+        if not isinstance(clear_pairing, bool):
+            raise ValueError('清除选项格式不正确')
+        token = None if pairing_token is None else str(pairing_token).strip()
+        if token and (len(token) > 1000 or any(c.isspace() or ord(c) < 32 for c in token)):
+            raise ValueError('配对令牌格式不正确')
+        token_changed = bool(token) or bool(clear_pairing)
+        async with self.connecting:
+            if self.state != 'idle' or self.ring or self.powering_off:
+                raise ValueError('请在对话和响铃结束后修改服务器')
+            same_server = all(self.cfg.get(k) == v for k, v in values.items())
+            if same_server and not token_changed:
+                return {**values, 'pairing_configured': bool(self.cfg.get('pairing_token'))}
+            if same_server:
+                pairing = '' if clear_pairing else token
+                config.save(pairing_token=pairing)
+                self.cfg['pairing_token'] = pairing
+                self.hub.pairing_token = pairing
+                if pairing:
+                    self.hub.headers['X-Device-Pairing-Token'] = pairing
+                else:
+                    self.hub.headers.pop('X-Device-Pairing-Token', None)
+                if self.hub.connected:
+                    await self.end()
+                return {**values, 'pairing_configured': bool(pairing)}
+            # Save first: a disk failure must leave the currently working configuration intact.
+            saved = dict(values)
+            if clear_pairing:
+                saved['pairing_token'] = ''
+            elif token:
+                saved['pairing_token'] = token
+            config.save(**saved)
+            for task in self.hub_pollers:
+                task.cancel()
+            await asyncio.gather(*self.hub_pollers, return_exceptions=True)
+            await self.end()
+            self.cfg.update(values)
+            if clear_pairing:
+                self.cfg['pairing_token'] = ''
+            elif token:
+                self.cfg['pairing_token'] = token
+            self.hub.pairing_token = self.cfg.get('pairing_token', '')
+            if self.hub.pairing_token:
+                self.hub.headers['X-Device-Pairing-Token'] = self.hub.pairing_token
+            else:
+                self.hub.headers.pop('X-Device-Pairing-Token', None)
+            self.hub.url = values['hub_ws']
+            self.verifier = wake_verify.make(self.cfg['wake_verify'], self.cfg['wake_words'], values['hub_http'])
+            self.hub_seen = 0.0
+            self.history_loaded = False
+            self.models = {'current': None, 'options': []}
+            self.threads = {}
+            self.entry = None
+            self.reports = 0
+            self.events.publish('model', self.models)
+            self.events.publish('thread', {'entry': None, 'messages': [], 'reset': True})
+            self.set_state('idle')
+            self.hub_pollers = [asyncio.create_task(self._model_poller()),
+                                asyncio.create_task(self._report_poller())]
+            return {**values, 'pairing_configured': bool(self.cfg.get('pairing_token'))}
 
     def view_entry(self):
         cur = self.models.get('current')
@@ -451,6 +510,7 @@ class Client:
         self.listen_mode = mode
         self.vad_ended = False
         self.listen_since = time.monotonic()
+        self.silence.reset(self.listen_since)
         self.awaiting_text = False
         self.hub_pending = False
         if self.aborted_at is not None:
@@ -463,7 +523,7 @@ class Client:
         self.deadline = None
         if missed:
             self.play('miss')
-            self.events.publish('toast', {'kind': 'info', 'text': '没听清，可以再说一次「小麦小麦」'})
+            self.events.publish('toast', {'kind': 'info', 'text': '没听清，可以再说一次「小葵」'})
         self.set_state('idle')
 
     async def abort(self, reason=None):
@@ -497,6 +557,7 @@ class Client:
 
     async def end(self):
         """End the conversation: stop everything and close the channel, which clears the hub's context."""
+        self.silence.reset()
         if self.in_turn():
             await self.abort()
         self.uploading = False
@@ -771,6 +832,7 @@ class Client:
 
     async def _on_closed(self):
         # the conversation is over (the hub's idle timeout, an exit word, the end button)
+        self.silence.reset()
         self.play('bye')
         self.uploading = False
         self.vad_ended = False
@@ -828,27 +890,12 @@ class Client:
         leaving /boot (ext2, mounted read-write) to be repaired on the next boot."""
         if self.powering_off:
             return {'ok': True}   # a second tap while the first one is still on its way
-        job = update.read().get('job') or {}
-        if job.get('state') in UPDATE_BUSY and await self._update_running():
-            return {'ok': False, 'error': '正在更新，更新完再关机'}
         self.powering_off = True
         self.events.publish('power', {'state': 'off'})   # cover the page before ending a conversation (up to 3 s)
         if self.hub.connected:
             await self.end()
         asyncio.create_task(self._halt())
         return {'ok': True}
-
-    async def _update_running(self):
-        """The status file can be left saying "downloading" when the updater was killed (its 3 h limit).
-        Both units are oneshot: while they run they are "activating", which is-active's exit code
-        doesn't count as running, so read the states it prints."""
-        try:
-            p = await asyncio.create_subprocess_exec('systemctl', 'is-active', *UPDATE_UNITS,
-                                                     stdout=asyncio.subprocess.PIPE)
-            out, _ = await p.communicate()
-        except OSError:
-            return True
-        return any(s in ('active', 'activating', 'reloading', 'deactivating') for s in out.decode().split())
 
     async def _halt(self):
         await asyncio.sleep(HALT_AFTER)
@@ -1397,16 +1444,21 @@ class Client:
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s:
             if body is None:
                 async with s.get(self.cfg['hub_http'] + path) as r:
+                    r.raise_for_status()
                     return await r.json(content_type=None)
             async with s.post(self.cfg['hub_http'] + path, json=body) as r:
+                r.raise_for_status()
                 return await r.json(content_type=None)
 
     async def refresh_models(self):
         """Ask the hub for its models; False when it didn't answer (down, or still starting)."""
         try:
             data = await self._hub_http('/kiosk/llm?' + urllib.parse.urlencode({'device': self.cfg['device_id']}))
+            if not isinstance(data, dict) or not isinstance(data.get('options'), list):
+                return False
         except Exception:
             return False
+        self.hub_seen = time.monotonic()
         self._apply_models(data)
         return True
 
@@ -1451,6 +1503,25 @@ class Client:
 
     # ---- timers ----
 
+    def _silent_expired(self, now):
+        waiting = (self.state in ('idle', 'listening') and not self.ptt_held
+                   and not self.awaiting_text and not self.recognising and not self.hub_pending
+                   and not self.listen_after_reply and not self.abort_pending
+                   and self.audio.player.buffered() <= 0.02)
+        return self.silence.observe(now, connected=self.hub.connected, waiting=waiting,
+                                    speech=self.uploading and self.audio.mic_level > SPEECH_RMS)
+
+    async def _end_if_silent(self, now):
+        if not self._silent_expired(now):
+            return False
+        # Serialize with a fresh wake/reconnect, then recheck in case state changed while waiting.
+        async with self.connecting:
+            if not self._silent_expired(time.monotonic()):
+                return False
+            log.info('conversation idle for %.0f seconds: closing hub connection', self.silence.seconds)
+            await self.end()
+            return True
+
     async def _ticker(self):
         last_level = 0.0
         while True:
@@ -1468,7 +1539,12 @@ class Client:
                     self.recognising = False
                     self.set_state(self.state)
                 if self.deadline:   # still talking
-                    self.deadline = min(max(self.deadline, now + 2.5), self.listen_since + MAX_LISTEN)
+                    if self.listen_mode == 'realtime':
+                        self.deadline = max(self.deadline, now + self.cfg['follow_up_seconds'])
+                    else:
+                        self.deadline = min(max(self.deadline, now + 2.5), self.listen_since + MAX_LISTEN)
+            if await self._end_if_silent(now):
+                continue
             if self.uploading and self.listen_mode == 'manual' and now > self.listen_since + MAX_LISTEN:
                 # push-to-talk held (or a release lost) for too long: the hub buffers all of it
                 log.info('push-to-talk open for %d s: stopping it', MAX_LISTEN)
