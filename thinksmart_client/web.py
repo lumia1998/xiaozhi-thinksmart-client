@@ -56,6 +56,12 @@ def make_app(client: Client):
         asyncio.create_task(client.say(body.get('text', '')))
         return web.json_response({'ok': True})
 
+    async def choice(request):
+        body = await request.json()
+        if not isinstance(body, dict) or not isinstance(body.get('id'), str) or not isinstance(body.get('option_id'), str):
+            return web.json_response({'ok': False, 'error': '选择参数无效'}, status=400)
+        return web.json_response(await client.select_choice(body['id'], body['option_id']))
+
     async def history(_request):
         return web.json_response({'threads': client.threads}, headers={'Cache-Control': 'no-store'})
 
@@ -193,6 +199,7 @@ def make_app(client: Client):
     app.router.add_post('/api/ptt/stop', action(client.ptt_stop))
     app.router.add_post('/api/model', model)
     app.router.add_post('/api/text', text)
+    app.router.add_post('/api/choice', choice)
     app.router.add_get('/api/history', history)
     app.router.add_post('/api/media/playback', media_playback)
     app.router.add_post('/api/sleep', sleep_setting)

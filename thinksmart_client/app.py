@@ -616,6 +616,39 @@ class Client:
         self.heard = False
         self.deadline = None
 
+    async def select_choice(self, card_id, option_id):
+        rows = self.threads.get(self.view_entry(), [])
+        message = next((row for row in rows if (row.get('choice') or {}).get('id') == card_id), None)
+        if not message or not any(option['id'] == option_id for option in message['choice']['options']):
+            return {'ok': False, 'error': '选项不存在，请刷新对话'}
+        card = message['choice']
+        if card.get('selected'):
+            return {'ok': card['selected'] == option_id, 'selected': card['selected']}
+        if card.get('expired') or card.get('expires', 0) < time.time():
+            return {'ok': False, 'error': '选项已过期，请重新提问'}
+        pending = getattr(self, 'choice_pending', None)
+        if pending:
+            return {'ok': False, 'error': '正在提交选择'}
+        if self.in_turn():
+            await self.abort()
+        if not await self.ensure_connected():
+            return {'ok': False, 'error': '语音连接失败，请重试'}
+        future = asyncio.get_running_loop().create_future()
+        self.choice_pending = (card_id, future)
+        try:
+            sent = await self.hub.send({'type': 'listen', 'state': 'detect', 'choice': {'id': card_id, 'option_id': option_id}})
+            if not sent:
+                return {'ok': False, 'error': '连接已断开，请重试'}
+            result = await asyncio.wait_for(future, timeout=12)
+            if result.get('ok'):
+                card['selected'] = result['selected']
+                self.publish_message(message)
+            return result
+        except asyncio.TimeoutError:
+            return {'ok': False, 'error': '尚未收到确认，请重试'}
+        finally:
+            self.choice_pending = None
+
     async def ptt_stop(self):
         self.ptt_held = False
         if self.uploading:
@@ -640,7 +673,7 @@ class Client:
             log.info('the hub confirmed the abort after %.0f ms', (time.monotonic() - self.abort_pending) * 1000)
             self.abort_pending = None
             return True   # our own abort: what comes next was already decided
-        if kind in ('stt', 'media') or (kind == 'tts' and state in ('start', 'sentence_start')):
+        if kind in ('stt', 'media', 'assistant_text', 'choice_card') or (kind == 'tts' and state in ('start', 'sentence_start')):
             log.info('dropped from the interrupted turn: %s %s', kind, state or msg.get('text'))
             return True
         return False
@@ -743,7 +776,7 @@ class Client:
                     self.deadline = None
                 if not self.mute_audio:
                     self.set_state('speaking')
-                if text and not self.mute_audio:
+                if text and not self.mute_audio and msg.get('display_text', True):
                     if self.bot_msg is None:
                         self.bot_msg = self.add_message('bot', text)
                         self.question = None
@@ -776,6 +809,44 @@ class Client:
                     self.set_state('listening')
                 else:
                     self.set_state('idle')
+        elif kind == 'choice_result':
+            if msg.get('session_id') != self.hub.session_id:
+                return
+            if msg.get('ok'):
+                for row in self.threads.get(self.view_entry(), []):
+                    if (row.get('choice') or {}).get('id') == msg.get('id'):
+                        row['choice']['selected'] = msg.get('selected')
+                        self.publish_message(row)
+                        break
+            pending = getattr(self, 'choice_pending', None)
+            if pending and pending[0] == msg.get('id') and not pending[1].done():
+                pending[1].set_result(msg)
+        elif kind in ('assistant_text', 'choice_card'):
+            if msg.get('version') != 1 or msg.get('session_id') != self.hub.session_id or self.mute_audio:
+                return
+            if kind == 'assistant_text':
+                text, rid = msg.get('text'), msg.get('id')
+                if not isinstance(text, str) or len(text) > 60000 or not isinstance(rid, str) or len(rid) > 120:
+                    return
+                key = f'{self.hub.session_id}:{rid}'
+                rows = self.threads.get(self.view_entry(), [])
+                message = next((row for row in rows if row.get('rich_id') == key), None)
+                if message:
+                    message['text'] = text
+                    self.publish_message(message)
+                else:
+                    message = self.add_message('bot', text, rich_id=key)
+                self.bot_msg = message
+            else:
+                from .choices import normalize
+                card = normalize(msg.get('card'))
+                if not card:
+                    return
+                if any((row.get('choice') or {}).get('id') == card['id'] for row in self.threads.get(self.view_entry(), [])):
+                    return
+                self.add_message('bot', '', choice=card)
+            self.question = None
+            self.screen.poke()
         elif kind == 'media':
             if msg.get('version') != 1 or msg.get('session_id') != self.hub.session_id or self.mute_audio:
                 return
@@ -938,8 +1009,10 @@ class Client:
             return   # the hub is down or too old to keep conversations
         if not data.get('ok') or self.hub.connected:
             return
+        from .choices import normalize as normalize_choice
         self.threads = {entry: [{'id': f"h{m['id']}", 'role': m['role'], 'text': m['text'], 'time': m['time'],
                                  'entry': entry, **({'interrupted': True} if m.get('interrupted') else {}),
+                                 **({'choice': normalize_choice(m['choice'])} if normalize_choice(m.get('choice')) else {}),
                                  **({'media': media.normalize(m['media'])} if m.get('media') else {})}
                                 for m in items]
                         for entry, items in (data.get('models') or {}).items()}

@@ -1,0 +1,3 @@
+markdown-it 15.0.3
+dompurify 3.4.18
+@highlightjs/cdn-assets 11.12.0

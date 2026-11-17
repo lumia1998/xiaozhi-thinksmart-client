@@ -46,7 +46,8 @@ class Hub:
             # ready_on_tts_start: messages and audio are handled in order, so audio right after "tts start"
             # plays (the hub need not wait before a cached reply such as "我在")
             'features': {'mcp': True, 'vad_end': True, 'ready_on_tts_start': True,
-                         'media': {'version': 1, 'kinds': ['image', 'video', 'audio']}},
+                         'media': {'version': 1, 'kinds': ['image', 'video', 'audio']},
+                         'rich_text': {'version': 1}, 'choices': {'version': 1}},
             'audio_params': {'format': 'opus', 'sample_rate': 16000, 'channels': 1, 'frame_duration': 20},
         }))
         try:

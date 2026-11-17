@@ -17,10 +17,10 @@ const ui = {
 };
 
 const SUGGEST = [
-  ['明天北京天气怎么样？', 'var(--amber-4)', 'var(--amber-11)', '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6L6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/>'],
-  ['帮我想个周末计划', 'var(--cyan-4)', 'var(--cyan-11)', '<path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z"/>'],
-  ['讲个冷笑话', 'var(--pink-4)', 'var(--pink-11)', '<circle cx="12" cy="12" r="9"/><path d="M8 14.5a5 5 0 0 0 8 0M9 9.5h.01M15 9.5h.01"/>'],
-  ['把音量调小一点', 'var(--purple-4)', 'var(--purple-11)', '<path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M17 12h4"/>'],
+  { title: '天气', detail: '明天天气怎么样？', prompt: '明天本地天气怎么样？', icon: 'cloud-sun', style: 'weather' },
+  { title: '音乐', detail: '发现喜欢的音乐', prompt: '推荐几首适合现在听的音乐', icon: 'music-2', style: 'music' },
+  { title: '智能家居', detail: '控制家里的设备', prompt: '帮我看看家里有哪些可以控制的智能设备', icon: 'house', style: 'home' },
+  { title: '计划', detail: '安排这一周', prompt: '帮我安排这周的计划', icon: 'calendar-days', style: 'plan' },
 ];
 
 /* ---- clock ---- */
@@ -105,6 +105,9 @@ function renderStatus() {
   // recognising, thinking or speaking: the turn can be interrupted (the question is dropped if nothing was said yet)
   $('btnAbort').disabled = !ui.status.media_playing && (!connected || !(state === 'speaking' || state === 'thinking' || (ui.status.recognising && !ui.ptt)));
   $('btnEnd').disabled = !connected;
+  $('btnAbort').hidden = $('btnAbort').disabled;
+  $('btnEnd').hidden = $('btnEnd').disabled;
+  $('composer').dataset.active = String(shown !== 'idle');
   const link = $('link');
   link.classList.toggle('on', connected);
   link.querySelector('span').textContent = connected ? '对话中' : '待机';
@@ -870,10 +873,6 @@ function renderSide() {
   $('navDashboard').setAttribute('aria-current', page === 'dashboard' ? 'page' : 'false');
   $('navChat').setAttribute('aria-current', page === 'chat' ? 'page' : 'false');
   $('chatEmpty').hidden = ui.thread.messages.length > 0 || shownState() !== 'idle';
-  const last = ui.thread.messages[ui.thread.messages.length - 1];
-  $('recentLogo').src = logoSrc(ui.models.current);
-  $('recentTitle').textContent = ui.models.current ? ui.models.current.label : '与小葵对话';
-  $('recentPreview').textContent = last ? (last.text || '查看媒体内容') : '开始你的第一段对话';
 }
 
 function setPage(page) {
@@ -961,7 +960,25 @@ function fillMsg(el, m) {
       text.className = 'message-text';
       body.appendChild(text);
     }
-    text.innerHTML = html;
+    RichContent.renderText(text, m.text || '');
+    let timestamp = body.querySelector(':scope > .ts');
+    if (!timestamp) { timestamp = document.createElement('span'); timestamp.className = 'ts'; body.appendChild(timestamp); }
+    timestamp.textContent = fmtTime(m.time) + (m.interrupted ? ' 已打断' : '');
+    let choice = body.querySelector('.choice-card');
+    if (m.choice) {
+      if (!choice) { choice = document.createElement('section'); choice.className = 'choice-card'; body.appendChild(choice); }
+      const version = JSON.stringify(m.choice);
+      if (choice.dataset.card !== version) {
+        choice.dataset.card = version;
+        RichContent.renderChoice(choice, m.choice, async (id, option_id) => {
+          if (DEMO !== null) return {ok: true, selected: option_id};
+          const response = await fetch('/api/choice', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({id, option_id})});
+          const result = await response.json();
+          if (!response.ok) throw new Error(result.error || '提交失败');
+          return result;
+        });
+      }
+    } else if (choice) choice.remove();
     const mediaKey = JSON.stringify(m.media || []);
     if (body.dataset.media !== mediaKey) {
       const previous = body.querySelector('.message-media');
@@ -1203,8 +1220,6 @@ $('navHistory').addEventListener('click', () => setHistoryOpen($('historyPanel')
 $('navSettings').addEventListener('click', () => { setHistoryOpen(false); $('btnSettings').click(); });
 $('historyClose').addEventListener('click', () => { setHistoryOpen(false); $('navHistory').focus(); });
 $('historySearch').addEventListener('input', renderHistory);
-$('allConversations').addEventListener('click', () => setHistoryOpen(true));
-$('resumeConversation').addEventListener('click', () => setPage('chat'));
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && !$('historyPanel').hidden) {
     setHistoryOpen(false);
@@ -1248,7 +1263,13 @@ $('composer').addEventListener('submit', async event => {
   event.preventDefault();
   const input = $('messageInput');
   const draft = input.value;
-  if (await sendText(draft) && input.value === draft) input.value = '';
+  if (await sendText(draft) && input.value === draft) {
+    input.value = '';
+    $('composer').classList.remove('has-text');
+  }
+});
+$('messageInput').addEventListener('input', () => {
+  $('composer').classList.toggle('has-text', Boolean($('messageInput').value.trim()));
 });
 $('messageInput').addEventListener('keydown', event => {
   if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
@@ -1257,12 +1278,11 @@ $('messageInput').addEventListener('keydown', event => {
   }
 });
 
-for (const [q, bg, fg, icon] of SUGGEST) {
+for (const suggestion of SUGGEST) {
   const b = document.createElement('button');
-  b.className = 'chip';
-  b.innerHTML = `<i style="background:${bg};color:${fg}"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-    stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon}</svg></i>${esc(q)}`;
-  b.addEventListener('click', () => sendText(q));
+  b.className = 'chip feature-' + suggestion.style;
+  b.innerHTML = `<img class="feature-icon" src="/static/v2/icons/${suggestion.icon}.svg" alt=""><b>${esc(suggestion.title)}</b><span>${esc(suggestion.detail)}</span>`;
+  b.addEventListener('click', () => sendText(suggestion.prompt));
   $('chips').appendChild(b);
 }
 
