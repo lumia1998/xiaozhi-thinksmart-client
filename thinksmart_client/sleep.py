@@ -1,7 +1,4 @@
-"""Sleep hours (requirements section eight): reports from the hub wait on the screen instead of
-being read out, and the screen is dimmed. Waking the device works as usual, at full volume (the user
-asked: only nothing announced on its own; 2026-10-31).
-The setting lives in the user config (config.save), so a client update keeps it."""
+"""Quiet hours for automatic reports, stored in the user configuration."""
 import datetime
 import re
 

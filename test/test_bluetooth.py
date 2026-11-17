@@ -84,13 +84,11 @@ def test_clear_drops_everything():
 
 def make_client():
     c = test_barge_in.make_client()
-    c.ring = None
-    c.preview = None
     c.audio.background = Background()
     return c
 
 
-def test_target_follows_the_conversation_and_alarms():
+def test_target_follows_the_conversation():
     c = make_client()
     assert c.background_target() == 1.0
     c.state = 'listening'
@@ -101,57 +99,6 @@ def test_target_follows_the_conversation_and_alarms():
     c.audio.player.trim(0)
     c.audio.player.pull(OUT_RATE)
     assert c.background_target() == 1.0
-    c.ring = {'items': []}
-    assert c.background_target() == 0.0
-    c.ring = None
-
-
-class FakeTask:
-    def __init__(self, done):
-        self._done = done
-
-    def done(self):
-        return self._done
-
-
-def test_a_tone_preview_mutes_only_while_it_plays():
-    # it stays in c.preview after playing to its end: the phone's music must come back then
-    c = make_client()
-    c.preview = FakeTask(done=False)
-    assert c.background_target() == 0.0
-    c.preview = FakeTask(done=True)
-    assert c.background_target() == 1.0
-
-
-class FakeBt:
-    def __init__(self, streaming=True):
-        self.paused = 0
-        self._streaming = streaming
-
-    def streaming(self):
-        return {'name': 'phone'} if self._streaming else None
-
-    async def pause(self):
-        self.paused += 1
-
-
-@pytest.mark.asyncio
-async def test_a_ring_pauses_the_phone_once():
-    c = make_client()
-    c.bt = FakeBt()
-    task = asyncio.create_task(c._bluetooth_loop())
-    await asyncio.sleep(0.25)
-    assert c.bt.paused == 0 and c.audio.background.target == 1.0
-    c.ring = {'items': []}
-    await asyncio.sleep(0.35)
-    assert c.bt.paused == 1 and c.audio.background.target == 0.0
-    c.ring = None
-    await asyncio.sleep(0.15)
-    assert c.audio.background.target == 1.0
-    c.ring = {'items': []}           # another ring: asked again
-    await asyncio.sleep(0.25)
-    assert c.bt.paused == 2
-    task.cancel()
 
 
 @pytest.mark.asyncio

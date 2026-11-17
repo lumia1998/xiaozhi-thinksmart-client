@@ -2,8 +2,7 @@
 
 Runs without the device's audio stack (sound card, libopus, WebRTC APM and sherpa-onnx are stubbed):
   uv run --no-project --with numpy --with soxr --with websockets --with aiohttp --with pytest --with pytest-asyncio \
-      python -m pytest -q tests
-(on a Mac add DYLD_FALLBACK_LIBRARY_PATH=/opt/homebrew/lib so test_alarms also decodes the real tone files)
+      python -m pytest -c test/pytest.ini -q
 """
 import asyncio
 import time
@@ -54,7 +53,12 @@ class FakeHub:
 def make_client():
     c = app.Client.__new__(app.Client)
     c.cfg = {'follow_up_seconds': 10}
+    c.silence = app.SilenceTimer(20)
+    c.ptt_held = False
+    c.listen_mode = None
     c.events = app.Events()
+    c.camera = app.camera.Camera(c.cfg, c.events.publish)
+    c.camera_requests = set()
     c.state = 'idle'
     c.uploading = False
     c.deadline = None
@@ -79,14 +83,19 @@ def make_client():
                                     stalled=lambda: None)
     c.screen = types.SimpleNamespace(hold=lambda: None, release=lambda after=None: None, poke=lambda after=None: None,
                                      level=None, dimmed=False, current_level=lambda: 50)
+    c.screen.brightness = lambda level: setattr(c.screen, 'level', level)
     c.keys = types.SimpleNamespace(mic_on=True)
     c.sleep, c.sleeping, c.reports = {}, False, 0
+    c.normal_brightness = 100
+    c.brightness_schedule = app.brightness_schedule.normalize()
+    c.schedule_active = False
     c.screen_off = {'enabled': True, 'minutes': 5}
     c.sounds = {}
     c.verifier = None
     c.speech_end = 0.0
     c.connecting = asyncio.Lock()
-    c.volume, c.ring, c.preview = 60, None, None
+    c.volume = 60
+    c.volume_lock = asyncio.Lock()
 
     async def no_models():
         pass
@@ -278,7 +287,7 @@ async def test_hub_recognised_nothing_while_waiting_for_text():
     c.set_state('thinking')
     assert c.status()['recognising']
     await c._on_json({'type': 'vad', 'state': 'empty'})
-    assert c.state == 'idle' and not c.awaiting_text and shown == ['没听清，可以再说一次「小麦小麦」']
+    assert c.state == 'idle' and not c.awaiting_text and shown == ['没听清，可以再说一次「小葵」']
 
 
 @pytest.mark.asyncio
@@ -302,7 +311,7 @@ async def test_deadline_does_not_wait_when_the_hub_answered_everything():
     await c._on_json({'type': 'vad', 'state': 'empty'})
     c.deadline = time.monotonic() - 1
     await tick(c)
-    assert c.state == 'idle' and not c.awaiting_text and shown == ['没听清，可以再说一次「小麦小麦」']
+    assert c.state == 'idle' and not c.awaiting_text and shown == ['没听清，可以再说一次「小葵」']
 
 
 @pytest.mark.asyncio
@@ -327,4 +336,4 @@ async def test_push_to_talk_with_nothing_recognised_ends_at_once():
     await c.ptt_stop()
     assert c.state == 'thinking' and c.status()['recognising']
     await c._on_json({'type': 'vad', 'state': 'empty'})
-    assert c.state == 'idle' and shown == ['没听清，可以再说一次「小麦小麦」']
+    assert c.state == 'idle' and shown == ['没听清，可以再说一次「小葵」']

@@ -62,17 +62,17 @@ async def test_set_screen_off_saves_and_hints(hint, monkeypatch):
 @pytest.mark.asyncio
 @pytest.mark.parametrize('changes, idle', [({'minutes': 1}, 60), ({'minutes': 30}, 1800), ({'enabled': False}, 0)])
 async def test_sleep_hours_keep_the_users_screen_off(hint, monkeypatch, changes, idle):
-    """The sleep hours dim the screen; screen-off still follows the setting (the user asked)."""
+    """Quiet hours leave brightness and the screen-off setting independent."""
     monkeypatch.setattr(config, 'save', lambda **kw: None)
     c = app.Client.__new__(app.Client)
     c.screen, c.screen_off, c.state = device.Screen(), device.normalize_screen_off(None), 'idle'
     c.set_state = lambda state: None
-    c.sleep, c.bright_in_sleep = {'enabled': True, 'start': '00:00', 'end': '00:00'}, False
+    c.sleep = {'enabled': True, 'start': '00:00', 'end': '00:00'}
     monkeypatch.setattr(app.sleep, 'active', lambda setting, now=None: True)
     c._apply_sleep()
     await c.set_screen_off(**changes)
-    assert hint()['dim'] and hint()['idle'] == idle
+    assert not hint()['dim'] and hint()['idle'] == idle
     seq = hint()['seq']
     c._on_new_report()                    # a report in the sleep hours only lights the screen
-    assert hint()['seq'] == seq + 1 and hint()['dim'] and hint()['idle'] == idle
+    assert hint()['seq'] == seq + 1 and not hint()['dim'] and hint()['idle'] == idle
     assert hint().get('after') == (idle or None)

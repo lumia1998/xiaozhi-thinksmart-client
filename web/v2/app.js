@@ -12,15 +12,15 @@ const ui = {
   models: { current: null, options: [] },
   thread: { entry: null, messages: [] },
   ptt: false,
-  alarms: { synced: true, items: [], missed: [], ringing: null, volume: 70, tone: 'coffee', tones: {} },
   bluetooth: null,
+  page: null,
 };
 
 const SUGGEST = [
-  ['明天北京天气怎么样？', '#ffb54729', '#ffcf7a', '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6L6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/>'],
-  ['帮我想个周末计划', '#5ee0ff24', '#8ff0ff', '<path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z"/>'],
-  ['讲个冷笑话', '#ff7ac824', '#ff9bd6', '<circle cx="12" cy="12" r="9"/><path d="M8 14.5a5 5 0 0 0 8 0M9 9.5h.01M15 9.5h.01"/>'],
-  ['把音量调小一点', '#9b7bff2b', '#c8b4ff', '<path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M17 12h4"/>'],
+  ['明天北京天气怎么样？', 'var(--amber-4)', 'var(--amber-11)', '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6L6 6M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/>'],
+  ['帮我想个周末计划', 'var(--cyan-4)', 'var(--cyan-11)', '<path d="M12 3l2.2 5.8L20 11l-5.8 2.2L12 19l-2.2-5.8L4 11l5.8-2.2z"/>'],
+  ['讲个冷笑话', 'var(--pink-4)', 'var(--pink-11)', '<circle cx="12" cy="12" r="9"/><path d="M8 14.5a5 5 0 0 0 8 0M9 9.5h.01M15 9.5h.01"/>'],
+  ['把音量调小一点', 'var(--purple-4)', 'var(--purple-11)', '<path d="M4 9v6h4l5 4V5L8 9H4z"/><path d="M17 12h4"/>'],
 ];
 
 /* ---- clock ---- */
@@ -32,8 +32,6 @@ function tick() {
   $('bigDate').textContent = `${now.getMonth() + 1}月${now.getDate()}日  星期${WEEK[now.getDay()]}`;
   const h = now.getHours();
   $('greet').textContent = h < 5 ? '夜深了' : h < 9 ? '早上好' : h < 12 ? '上午好' : h < 14 ? '中午好' : h < 18 ? '下午好' : h < 23 ? '晚上好' : '夜深了';
-  $('ringTime').textContent = hm;
-  tickAlarms();
 }
 
 /* ---- microphone feedback; the portrait's independent blink animation is in avatar.js ---- */
@@ -84,12 +82,13 @@ function renderStatus() {
   const shown = shownState();
   document.body.dataset.state = shown;
   const text = {
-    idle: ['说<em>「小葵」</em>', connected ? '对话还在，唤醒后可以接着聊' : '或者点麦克风；按住可以直接说'],
-    connecting: ['正在连接…', '连上小智网关后就开始听'],
-    listening: ui.ptt ? ['松开<em>发送</em>', '说完松开手指'] : ['我在听', '说完停一下，我就开始回答'],
-    thinking: [`<em>${esc(modelName())}</em> 正在思考`, '复杂的问题可能要想一会儿'],
-    speaking: ['正在回答', '喊「小葵」或点打断就能停下'],
+    idle: ['说<em>「小葵」</em>', '点按说话，长按录音'],
+    connecting: ['正在连接', '正在连接语音服务'],
+    listening: ui.ptt ? ['松开<em>发送</em>', '说完松开手指'] : ['正在聆听', '说完后会自动发送'],
+    thinking: ['正在思考', modelName()],
+    speaking: ['正在回答', '唤醒或点按打断'],
   }[shown] || ['', ''];
+  if (ui.status.media_playing && shown === 'idle') text.splice(0, 2, '正在播放', '');
   if (ui.status.recognising && !ui.ptt) text.splice(0, 2, '正在识别', '你说完了，正在把话转成文字');
   const micOff = ui.status.mic === false;
   document.body.classList.toggle('mic-off', micOff);
@@ -104,7 +103,7 @@ function renderStatus() {
   $('title').innerHTML = text[0];
   $('hint').textContent = text[1];
   // recognising, thinking or speaking: the turn can be interrupted (the question is dropped if nothing was said yet)
-  $('btnAbort').disabled = !connected || !(state === 'speaking' || state === 'thinking' || (ui.status.recognising && !ui.ptt));
+  $('btnAbort').disabled = !ui.status.media_playing && (!connected || !(state === 'speaking' || state === 'thinking' || (ui.status.recognising && !ui.ptt)));
   $('btnEnd').disabled = !connected;
   const link = $('link');
   link.classList.toggle('on', connected);
@@ -113,6 +112,7 @@ function renderStatus() {
   renderPending();
   setVoiceFeedback(shown);
   renderSettings();
+  renderBrightnessSchedule();
   renderBright();
   renderScreenOff();
   renderVol();
@@ -138,6 +138,7 @@ function renderModels() {
     grid.appendChild(b);
   }
   renderHead();
+  renderHistory();
 }
 
 function openSheet(on) {
@@ -149,11 +150,12 @@ function openSheet(on) {
 const server = { models: null, thread: null };
 const seenThreads = {};   // entry -> the client's messages for that model, shown at once when switching to it
 let switching = null;
+let historyRevision = 0;
 
 async function switchModel(m) {
   openSheet(false);
   if (ui.models.current && ui.models.current.entry === m.entry) return;
-  if (DEMO) return demo.switchTo(m);
+  if (DEMO !== null) return demo.switchTo(m);
   switching = m.entry;
   ui.models = Object.assign({}, ui.models, { current: m });
   ui.thread = { entry: m.entry, messages: seenThreads[m.entry] || [] };
@@ -186,7 +188,7 @@ function renderSettings() {
   $('sleepTimes').classList.toggle('off', !s.enabled);
   $('sleepStart').textContent = s.start;
   $('sleepEnd').textContent = s.end;
-  $('sleepNote').textContent = !s.enabled ? '睡眠时段已关闭：补报一到就念，音量和亮度照常'
+  $('sleepNote').textContent = !s.enabled ? '睡眠时段已关闭'
     : s.active ? `现在是睡眠时段，到 ${s.end} 结束` : `每天 ${s.start} 到 ${s.end} 是睡眠时段，现在不在`;
 }
 function sendSleep(changes, delay) {
@@ -220,16 +222,15 @@ for (const b of document.querySelectorAll('.stepper button')) {
 let brightEdit = null;   // the slider's value while the finger is on it or the change is on its way
 let brightTimer = null, brightSent = 0, brightDrag = false;
 function brightSetting() {
-  return Object.assign({ level: 100, dimmed: false }, ui.status.brightness || {},
-                       brightEdit === null ? {} : { level: brightEdit, dimmed: false });
+  const setting = Object.assign({ level: 100, dimmed: false }, ui.status.brightness || {});
+  return {...setting, level: brightEdit ?? setting.normal ?? setting.level};
 }
 function renderBright() {
   const b = brightSetting();
   if (brightEdit === null) $('brightRange').value = b.level;
   $('brightRange').style.setProperty('--fill', b.level + '%');
   $('brightNum').textContent = b.level + '%';
-  $('brightNote').textContent = b.dimmed ? '睡眠时段内屏幕调暗了；拖一下滑条，这次时段就按你调的亮度'
-    : '熄屏再亮也保持这个亮度；也可以说「小葵，屏幕亮一点」「调到最亮」';
+  $('brightNote').textContent = b.dimmed ? `定时亮度生效中，当前 ${ui.status.brightness.level}%` : '';
 }
 async function sendBright(body) {
   if (DEMO) { ui.status.brightness = { level: body.level, dimmed: false }; return; }
@@ -272,6 +273,50 @@ function dropBright() {
 }
 $('brightRange').addEventListener('pointerup', dropBright);
 $('brightRange').addEventListener('pointercancel', dropBright);
+$('brightRange').addEventListener('change', () => {
+  if (!brightDrag) sendBright({level: Number($('brightRange').value)});
+});
+
+let brightnessScheduleDirty = false;
+function renderBrightnessSchedule() {
+  const setting = ui.status.brightness_schedule || {enabled: false, start: '00:00', end: '06:00', level: 30};
+  $('brightnessScheduleState').textContent = setting.active ? '生效中' : setting.enabled ? '已启用' : '已关闭';
+  if (brightnessScheduleDirty) return;
+  $('brightnessScheduleEnabled').checked = setting.enabled;
+  $('brightnessScheduleStart').value = setting.start;
+  $('brightnessScheduleEnd').value = setting.end;
+  $('brightnessScheduleLevel').value = setting.level;
+}
+$('brightnessScheduleForm').addEventListener('input', () => {
+  brightnessScheduleDirty = true;
+  $('brightnessScheduleEnd').setCustomValidity('');
+  $('brightnessScheduleResult').textContent = '';
+});
+$('brightnessScheduleForm').addEventListener('submit', async event => {
+  event.preventDefault();
+  const body = {enabled: $('brightnessScheduleEnabled').checked,
+    start: $('brightnessScheduleStart').value, end: $('brightnessScheduleEnd').value,
+    level: Number($('brightnessScheduleLevel').value)};
+  if (body.start === body.end) {
+    $('brightnessScheduleEnd').setCustomValidity('开始和结束时间须不同');
+    return $('brightnessScheduleEnd').reportValidity();
+  }
+  $('brightnessScheduleSave').disabled = true;
+  try {
+    const result = DEMO !== null ? {ok: true, brightness_schedule: {...body, active: false}}
+      : await postJson('/api/brightness-schedule', body);
+    if (!result.ok) {
+      $('brightnessScheduleResult').textContent = result.error || '保存失败，请重试';
+      return;
+    }
+    ui.status.brightness_schedule = result.brightness_schedule;
+    brightnessScheduleDirty = false;
+    renderBrightnessSchedule();
+    $('brightnessScheduleResult').textContent = '已保存';
+  } finally {
+    $('brightnessScheduleSave').disabled = false;
+  }
+});
 
 /* ---- settings: auto screen-off (the client hints the system's screen blanker) ---- */
 const offEdit = {};   // a change on its way
@@ -302,7 +347,7 @@ async function sendScreenOff(changes) {
 $('offSwitch').addEventListener('click', () => sendScreenOff({ enabled: !offSetting().enabled }));
 for (const b of $('offMinutes').children) b.addEventListener('click', () => sendScreenOff({ minutes: Number(b.dataset.m) }));
 
-/* ---- settings: volumes (the device's, which the keys and voice change too, and the alarms' own) ---- */
+/* ---- settings: volume ---- */
 // Same finger-following slider as the brightness: at most one change every 150 ms while dragging, the
 // last one on release; what the client says meanwhile doesn't move the thumb under the finger.
 function slider(id, numId, get, send) {
@@ -355,108 +400,6 @@ async function postJson(path, body) {
 }
 const renderVol = slider('volRange', 'volNum', () => ui.status.volume,
   v => (DEMO ? (ui.status.volume = v) : postJson('/api/volume', { volume: v })));
-const renderAlarmVol = slider('alarmVolRange', 'alarmVolNum', () => ui.alarms.volume,
-  v => (DEMO ? (ui.alarms.volume = v) : postJson('/api/alarm-volume', { volume: v })));
-
-/* ---- countdowns, alarms and reminders (alarms.py: the client keeps and rings them) ---- */
-const KIND_ICON = { timer: '计时', alarm: '闹钟', reminder: '提醒' };
-const now_s = () => Date.now() / 1000;
-function hhmm(t) {
-  const d = new Date(t * 1000);
-  return pad(d.getHours()) + ':' + pad(d.getMinutes());
-}
-function dayText(t) {
-  const d = new Date(t * 1000), today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const days = Math.round((new Date(d.getFullYear(), d.getMonth(), d.getDate()) - today) / 86400000);
-  return { '-1': '昨天', 0: '今天', 1: '明天', 2: '后天' }[days] || `${d.getMonth() + 1}月${d.getDate()}日 星期${WEEK[d.getDay()]}`;
-}
-function left(t) {
-  const s = Math.max(0, Math.round(t - now_s()));
-  const h = Math.floor(s / 3600), m = Math.floor(s % 3600 / 60);
-  return (h ? h + ':' + pad(m) : m) + ':' + pad(s % 60);
-}
-function alarmRow(v) {
-  if (v.kind === 'timer') {
-    return [`<span data-left="${v.at}">${left(v.at)}</span>${v.label ? ' ' + esc(v.label) : ''}`,
-            `倒计时，${hhmm(v.at)} 响${v.snoozed ? ' ， 再睡中' : ''}`];
-  }
-  const sub = [dayText(v.at)];
-  if (v.repeat) sub.push(esc(v.repeat));
-  if (v.snoozed) sub.push('再睡中');
-  if (v.kind === 'reminder') sub.push(v.spoken ? '到点念出来' : v.spoken === false ? '只响铃（没合成出语音）' : '正在合成语音');
-  return [`${hhmm(v.at)}${v.label ? ' ' + esc(v.label) : ''}`, sub.join(' ， ')];
-}
-function renderAlarms() {
-  const a = ui.alarms;
-  document.body.classList.toggle('alarms-paused', !a.synced);
-  document.body.classList.toggle('ringing', !!a.ringing);
-  document.body.classList.toggle('has-timer', a.items.some(v => v.kind === 'timer'));
-  // home: the running countdowns and the next alarm or reminder
-  const timers = a.items.filter(v => v.kind === 'timer').slice(0, 3);
-  const next = a.items.find(v => v.kind !== 'timer');
-  const chips = timers.map(v => `<div class="na timer">倒计时 <b data-left="${v.at}">${left(v.at)}</b>${v.label ? esc(v.label) : ''}</div>`);
-  if (next) chips.push(`<div class="na">${KIND_ICON[next.kind]} <b>${dayText(next.at)} ${hhmm(next.at)}</b>${esc(next.label || '')}</div>`);
-  if (!a.synced && a.items.length) chips.unshift('<div class="na paused">时间未同步，闹钟暂停</div>');
-  $('nextAlarms').innerHTML = chips.join('');
-  // settings: the list, the tones, the missed ones
-  $('alarmCount').textContent = a.items.length ? `${a.items.length} 条` : '';
-  $('alarmList').innerHTML = a.items.length ? a.items.map(v => {
-    const [main, sub] = alarmRow(v);
-    return `<div class="al ${v.kind}"><i>${KIND_ICON[v.kind]}</i><div class="al-text"><b>${main}</b><span>${sub}</span></div>` +
-      `<button class="al-del" data-id="${v.id}">删除</button></div>`;
-  }).join('') : '<div class="alarm-empty">还没有闹钟和提醒</div>';
-  $('tones').innerHTML = Object.entries(a.tones || {}).map(([k, name]) =>
-    `<button data-tone="${esc(k)}" class="${k === a.tone ? 'on' : ''}">${esc(name)}</button>`).join('');
-  // home: the missed ones (newest first, at most 3 shown) until 知道了
-  $('missedBox').hidden = !a.missed.length;
-  $('missedList').innerHTML = a.missed.slice(0, 3).map(m =>
-    `<div class="mh"><b>${dayText(m.at)} ${hhmm(m.at)}</b>${KIND_ICON[m.kind] || ''}${m.label ? ' ， ' + esc(m.label) : ''}` +
-    `<small>${m.why === 'off' ? '设备关着' : m.kind === 'reminder' ? '提醒了 3 分钟没人停' : '响了 10 分钟没人停'}</small></div>`).join('') +
-    (a.missed.length > 3 ? `<div class="mh more">还有 ${a.missed.length - 3} 条</div>` : '');
-  renderAlarmVol();
-  renderRing();
-  tickAlarms();
-}
-function renderRing() {
-  const r = ui.alarms.ringing;
-  if (!r) return;
-  const items = r.items || [];
-  $('ringKind').textContent = [...new Set(items.map(v => v.type))].join('、') || '闹钟';
-  $('ringLabel').textContent = items.map(v => v.label).filter(Boolean).join('、');
-  $('ringNote').textContent = (r.notes || []).join('；');
-}
-function tickAlarms() {
-  for (const el of document.querySelectorAll('[data-left]')) el.textContent = left(Number(el.dataset.left));
-  const timer = ui.alarms.items.find(v => v.kind === 'timer');
-  $('timerText').textContent = timer ? left(timer.at) : '';
-}
-$('alarmList').addEventListener('click', e => {
-  const b = e.target.closest('.al-del');
-  if (!b) return;
-  if (!b.classList.contains('armed')) {
-    b.classList.add('armed');
-    b.textContent = '确认删除';
-    setTimeout(() => { b.classList.remove('armed'); b.textContent = '删除'; }, 4000);
-    return;
-  }
-  if (DEMO) { ui.alarms.items = ui.alarms.items.filter(v => v.id !== Number(b.dataset.id)); return renderAlarms(); }
-  postJson('/api/alarms/delete', { id: Number(b.dataset.id) }).then(r => { if (r.ok) toast('已删除'); });
-});
-$('tones').addEventListener('click', e => {
-  const b = e.target.closest('button');
-  if (!b) return;
-  if (DEMO) { ui.alarms.tone = b.dataset.tone; return renderAlarms(); }
-  postJson('/api/alarm-tone', { tone: b.dataset.tone }).then(() => postJson('/api/alarm-tone', { tone: b.dataset.tone, preview: true }));
-});
-$('missedClear').addEventListener('click', () => (DEMO ? handlers.alarms(Object.assign({}, ui.alarms, { missed: [] }))
-                                                       : postJson('/api/alarms/missed/clear')));
-$('ringStop').addEventListener('click', () => post('/api/alarms/stop'));
-$('ringSnooze').addEventListener('click', () => {
-  if (DEMO) return post('/api/alarms/snooze');
-  postJson('/api/alarms/snooze').then(r => { if (r.ok) toast('好的，10 分钟后再叫你'); });   // postJson shows the error
-});
-
 /* ---- settings: chat history (kept on the hub; clearing also clears the hub's copy) ---- */
 let clearArmed = 0, memArmed = 0;   // first tap arms a button, a second one within 5 s clears
 function renderClear() {
@@ -679,7 +622,7 @@ function bars(signal) {
   const lit = signal > 75 ? 4 : signal > 50 ? 3 : signal > 25 ? 2 : 1;
   return '<span class="bars">' + [1, 2, 3, 4].map(i => `<i class="${i <= lit ? 'lit' : ''}"></i>`).join('') + '</span>';
 }
-const LOCK = '<svg class="w-lock" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="#b6c0e2" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
+const LOCK = '<svg class="w-lock" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg>';
 function renderNets(error) {
   const box = $('wNets');
   if (error || !wifi.nets.length) {
@@ -840,7 +783,7 @@ function renderBluetooth() {
   if (!b.available) note = '找不到蓝牙，或者蓝牙服务没有运行。';
   else if (!b.enabled) note = '打开后，手机可以把这台设备当蓝牙音箱放歌。';
   else if (b.window) note = `正在等手机连接（还剩 ${b.window} 秒）：在手机的蓝牙设置里点「${b.name}」，配对不用输密码。`;
-  else note = '连过的手机在蓝牙设置里点一下就能再连上。放歌时说话或闹钟响，歌声会自动变小或暂停。';
+  else note = '对话时自动降低手机音乐音量。';
   if (on && b.direct) note += ' 注意：系统层版本较旧，手机的声音没经过客户端，放歌时很难唤醒。';
   $('btNote').textContent = note;
   const phones = b.devices || [];
@@ -849,7 +792,7 @@ function renderBluetooth() {
     `<span${d.streaming ? ' class="live"' : ''}>${d.streaming ? esc(btPlaying(d)) : d.connected ? '已连接' : '已配对，没连着'}</span></div>` +
     (btIsArmed(d.address) ? `<button class="al-del armed" data-addr="${esc(d.address)}">确认忘记</button></div>`
                           : `<button class="al-del" data-addr="${esc(d.address)}">忘记</button></div>`)).join('')
-    : '<div class="alarm-empty">还没有连过的手机</div>';
+    : '<div class="device-empty">还没有连过的手机</div>';
   $('btAdd').classList.toggle('on', !!b.window);
   $('btAdd').textContent = b.window ? `停止等待（${b.window} 秒）` : '＋ 添加手机';
 }
@@ -905,7 +848,6 @@ $('powerBtn').addEventListener('click', async () => {
 });
 $('settingsClose').addEventListener('click', () => {
   $('settings').classList.remove('on');
-  if (!DEMO) postJson('/api/alarm-tone', { stop: true });   // a tone being tried stops with the settings
 });
 $('reportPill').addEventListener('click', () => { post('/api/reports/play'); toast('马上念给你听'); });
 
@@ -918,7 +860,77 @@ function welcomeShown(messages, state, connected) {
   return ['idle', 'connecting'].includes(state) && (!messages || !connected);
 }
 function renderSide() {
-  document.body.classList.toggle('fresh', welcomeShown(ui.thread.messages.length, shownState(), !!ui.status.connected));
+  const hasMedia = ui.thread.messages.some(message => message.media && message.media.length);
+  const page = ui.page || (!hasMedia && welcomeShown(ui.thread.messages.length, shownState(), !!ui.status.connected) ? 'dashboard' : 'chat');
+  document.body.dataset.page = page;
+  document.body.classList.toggle('fresh', page === 'dashboard');
+  $('welcome').hidden = page !== 'dashboard';
+  $('convo').hidden = page !== 'chat';
+  $('pageTitle').textContent = page === 'dashboard' ? '仪表盘' : '对话';
+  $('navDashboard').setAttribute('aria-current', page === 'dashboard' ? 'page' : 'false');
+  $('navChat').setAttribute('aria-current', page === 'chat' ? 'page' : 'false');
+  $('chatEmpty').hidden = ui.thread.messages.length > 0 || shownState() !== 'idle';
+  const last = ui.thread.messages[ui.thread.messages.length - 1];
+  $('recentLogo').src = logoSrc(ui.models.current);
+  $('recentTitle').textContent = ui.models.current ? ui.models.current.label : '与小葵对话';
+  $('recentPreview').textContent = last ? (last.text || '查看媒体内容') : '开始你的第一段对话';
+}
+
+function setPage(page) {
+  ui.page = page;
+  renderSide();
+  setHistoryOpen(false);
+  if (page === 'chat') requestAnimationFrame(scrollDown);
+}
+
+function setHistoryOpen(open) {
+  $('historyPanel').hidden = !open;
+  $('navHistory').setAttribute('aria-expanded', String(open));
+  if (open) { renderHistory(); loadHistoryList(); }
+}
+
+async function loadHistoryList() {
+  if (DEMO !== null) return;
+  const revision = historyRevision;
+  try {
+    const response = await fetch('/api/history', { cache: 'no-store' });
+    if (!response.ok) throw new Error('history unavailable');
+    const result = await response.json();
+    if (revision !== historyRevision) return;
+    for (const entry of Object.keys(seenThreads)) {
+      if (entry !== ui.thread.entry) delete seenThreads[entry];
+    }
+    for (const [entry, messages] of Object.entries(result.threads || {})) {
+      if (entry !== ui.thread.entry && Array.isArray(messages)) seenThreads[entry] = messages;
+    }
+    renderHistory();
+  } catch (error) {
+    if (!$('historyPanel').hidden) toast('记录暂时无法刷新', 'error');
+  }
+}
+
+function renderHistory() {
+  const query = $('historySearch').value.trim().toLocaleLowerCase();
+  const list = $('historyList');
+  list.replaceChildren();
+  for (const model of ui.models.options) {
+    const messages = model.entry === ui.thread.entry ? ui.thread.messages : seenThreads[model.entry] || [];
+    const last = messages[messages.length - 1];
+    const preview = last ? last.text || '媒体内容' : '打开对话';
+    if (query && ![model.label, model.model, ...messages.map(message => message.text)].join(' ').toLocaleLowerCase().includes(query)) continue;
+    const button = document.createElement('button');
+    button.className = 'history-item';
+    button.setAttribute('aria-current', String(model.entry === ui.thread.entry));
+    button.innerHTML = `<img class="tile sm" src="${esc(logoSrc(model))}" alt=""><span><b>${esc(model.label)}</b><small>${esc(preview)}</small></span>`;
+    button.addEventListener('click', () => { setPage('chat'); switchModel(model); });
+    list.appendChild(button);
+  }
+  if (!list.childElementCount) {
+    const empty = document.createElement('p');
+    empty.className = 'history-empty';
+    empty.textContent = query ? '没有匹配的记录' : '连接服务器后显示可用对话';
+    list.appendChild(empty);
+  }
 }
 
 function entryModel(entry) {
@@ -930,7 +942,7 @@ function renderHead() {
   $('headLogo').src = logoSrc(m);
   $('headTitle').textContent = m ? `与 ${m.label} 的对话` : '对话';
   const n = ui.thread.messages.length;
-  $('headMeta').textContent = n ? `${n} 条消息 ， ${ui.status.connected ? '对话中' : '记录已保存'}` : '新对话';
+  $('headMeta').textContent = n ? `${n} 条消息` : '';
 }
 
 function fmtTime(t) {
@@ -941,7 +953,26 @@ function fmtTime(t) {
 // A reply grows sentence by sentence; the text just shows as it is (no per-sentence highlight)
 function fillMsg(el, m) {
   const html = esc(m.text) + (m.interrupted ? '<span class="cut">已打断</span>' : '') + `<span class="ts">${fmtTime(m.time)}</span>`;
-  if (m.role === 'bot') el.querySelector('.body').innerHTML = html;
+  if (m.role === 'bot') {
+    const body = el.querySelector('.body');
+    let text = body.querySelector('.message-text');
+    if (!text) {
+      text = document.createElement('div');
+      text.className = 'message-text';
+      body.appendChild(text);
+    }
+    text.innerHTML = html;
+    const mediaKey = JSON.stringify(m.media || []);
+    if (body.dataset.media !== mediaKey) {
+      const previous = body.querySelector('.message-media');
+      if (previous) { MediaCards.pauseAll(); previous.remove(); }
+      const media = document.createElement('div');
+      media.className = 'message-media';
+      MediaCards.render(media, m.media || []);
+      body.appendChild(media);
+      body.dataset.media = mediaKey;
+    }
+  }
   else el.innerHTML = html;
 }
 
@@ -962,6 +993,7 @@ function scrollDown() {
 }
 
 function renderThread() {
+  MediaCards.pauseAll();
   const box = $('messages');
   box.textContent = '';
   for (const m of ui.thread.messages) {
@@ -980,6 +1012,7 @@ function upsertMessage(m) {
   if (m.entry !== ui.thread.entry) return;
   const i = ui.thread.messages.findIndex(x => x.id === m.id);
   const box = $('messages');
+  const following = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
   if (i >= 0) {
     ui.thread.messages[i] = m;
     const el = box.querySelector(`[data-id="${m.id}"]`);
@@ -991,7 +1024,8 @@ function upsertMessage(m) {
   markLive();
   renderHead();
   renderSide();
-  scrollDown();
+  if (!$('historyPanel').hidden) renderHistory();
+  if (following || m.role === 'user') scrollDown();
 }
 
 function markLive() {
@@ -1055,16 +1089,18 @@ const handlers = {
     ui.build = s.build;
     ui.status = s.status; ui.models = server.models = s.models; ui.thread = server.thread = s.thread;
     switching = null;
+    historyRevision += 1;
     for (const k in seenThreads) delete seenThreads[k];
     seenThreads[s.thread.entry] = s.thread.messages;
-    if (s.alarms) ui.alarms = s.alarms;
     if (s.bluetooth) ui.bluetooth = s.bluetooth;
-    renderModels(); renderThread(); renderStatus(); renderAlarms(); renderBluetooth();
+    renderModels(); renderThread(); renderStatus(); renderBluetooth();
   },
   power(p) {
     $('powerOff').classList.toggle('on', p.state === 'off');
   },
   state(s) {
+    if (s.state !== 'idle') MediaCards.pauseAll();
+    if (s.state !== 'idle' && s.state !== ui.status.state && ui.status.state === 'idle') ui.page = 'chat';
     ui.status = s; renderStatus(); markLive(); renderHead();
   },
   model(m) {
@@ -1074,20 +1110,21 @@ const handlers = {
   },
   thread(t) {
     server.thread = t;
-    if (t.reset) for (const k in seenThreads) delete seenThreads[k];   // cleared, or the hub's history loaded
+    if (t.reset) {
+      historyRevision += 1;
+      for (const k in seenThreads) delete seenThreads[k];
+    }
     seenThreads[t.entry] = t.messages;
     if (switching && t.entry !== switching) return;
     ui.thread = t; renderThread();
   },
   message: m => upsertMessage(m),
+  media_pause: () => MediaCards.pauseAll(),
+  woke: () => MediaCards.pauseAll(),
   toast: t => toast(t.text, t.kind),
   volume(v) {
-    // a ring's own volume (keys while it rings) is shown, but isn't the device volume
-    if (!v.ring) { ui.status.volume = v.volume; renderVol(); }
+    ui.status.volume = v.volume; renderVol();
     if (v.source !== 'page') showVolume(v.volume);
-  },
-  alarms(a) {
-    ui.alarms = a; renderAlarms();
   },
   bluetooth(b) {
     ui.bluetooth = b; renderBluetooth();
@@ -1104,7 +1141,7 @@ function connectEvents() {
 
 /* ---- buttons ---- */
 function post(path, body) {
-  if (DEMO) return demo.action(path, body);
+  if (DEMO !== null) return demo.action(path, body);
   const opts = { method: 'POST' };
   if (body) Object.assign(opts, { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   return fetch(path, opts).catch(() => toast('客户端没有响应', 'error'));
@@ -1123,7 +1160,9 @@ function pttEnd() {
   renderStatus();
 }
 $('btnMic').addEventListener('pointerdown', e => {
+  if (e.button !== 0 || !e.isPrimary) return;
   e.preventDefault();
+  e.currentTarget.setPointerCapture(e.pointerId);
   holdTimer = setTimeout(() => {
     holdTimer = null;
     pttStart();
@@ -1141,20 +1180,89 @@ function release() {
   }
 }
 $('btnMic').addEventListener('pointerup', release);
-$('btnMic').addEventListener('pointercancel', release);
-$('btnMic').addEventListener('pointerleave', () => { if (ui.ptt) release(); });
+$('btnMic').addEventListener('pointercancel', () => {
+  clearTimeout(holdTimer);
+  holdTimer = null;
+  if (ui.ptt) { pttEnd(); post('/api/ptt/stop'); }
+});
+$('btnMic').addEventListener('lostpointercapture', () => {
+  clearTimeout(holdTimer);
+  holdTimer = null;
+  if (ui.ptt) { pttEnd(); post('/api/ptt/stop'); }
+});
+$('btnMic').addEventListener('click', e => { if (e.detail === 0) post('/api/wake'); });
 $('btnAbort').addEventListener('click', () => post('/api/abort'));
 $('btnEnd').addEventListener('click', () => { post('/api/end'); toast('对话已结束，聊天记录已保存'); });
 $('modelPill').addEventListener('click', () => openSheet(true));
 $('sheetClose').addEventListener('click', () => openSheet(false));
 document.addEventListener('contextmenu', e => e.preventDefault());
 
+$('navDashboard').addEventListener('click', () => setPage('dashboard'));
+$('navChat').addEventListener('click', () => setPage('chat'));
+$('navHistory').addEventListener('click', () => setHistoryOpen($('historyPanel').hidden));
+$('navSettings').addEventListener('click', () => { setHistoryOpen(false); $('btnSettings').click(); });
+$('historyClose').addEventListener('click', () => { setHistoryOpen(false); $('navHistory').focus(); });
+$('historySearch').addEventListener('input', renderHistory);
+$('allConversations').addEventListener('click', () => setHistoryOpen(true));
+$('resumeConversation').addEventListener('click', () => setPage('chat'));
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && !$('historyPanel').hidden) {
+    setHistoryOpen(false);
+    $('navHistory').focus();
+  }
+});
+
+let sendingMessage = false;
+async function sendText(text) {
+  text = text.trim();
+  if (!text || sendingMessage) return false;
+  sendingMessage = true;
+  $('sendMessage').disabled = true;
+  $('composerStatus').textContent = '正在发送';
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 15000);
+  try {
+    if (DEMO !== null) await demo.action('/api/text', { text });
+    else {
+      const response = await fetch('/api/text', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text }),
+        signal: controller.signal,
+      });
+      const result = await response.json();
+      if (!response.ok || result.ok === false) throw new Error(result.error || '发送失败，请重试');
+    }
+    setPage('chat');
+    $('composerStatus').textContent = '';
+    return true;
+  } catch (error) {
+    $('composerStatus').textContent = '发送失败，内容已保留';
+    toast(error.message || '客户端没有响应', 'error');
+    return false;
+  } finally {
+    clearTimeout(timeout);
+    sendingMessage = false;
+    $('sendMessage').disabled = false;
+  }
+}
+$('composer').addEventListener('submit', async event => {
+  event.preventDefault();
+  const input = $('messageInput');
+  const draft = input.value;
+  if (await sendText(draft) && input.value === draft) input.value = '';
+});
+$('messageInput').addEventListener('keydown', event => {
+  if (event.key === 'Enter' && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
+    event.preventDefault();
+    $('composer').requestSubmit();
+  }
+});
+
 for (const [q, bg, fg, icon] of SUGGEST) {
   const b = document.createElement('button');
   b.className = 'chip';
   b.innerHTML = `<i style="background:${bg};color:${fg}"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor"
     stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${icon}</svg></i>${esc(q)}`;
-  b.addEventListener('click', () => post('/api/text', { text: q }));
+  b.addEventListener('click', () => sendText(q));
   $('chips').appendChild(b);
 }
 
@@ -1199,20 +1307,9 @@ const demo = DEMO === null ? null : (() => {
     handlers.level({ mic: v * .07, out: v * .17 });
   }, 100);
 
-  const tones = { coffee: '咖啡时光', morning: '晨曦', bright: '元气早晨', hop: '阳光小跳跃', marimba: '清晨木琴' };
-  const alarmsDemo = () => ({
-    synced: true, volume: 70, tone: 'coffee', tones, ringing: null,
-    items: [
-      { id: 3, kind: 'timer', type: '倒计时', label: '煮鸡蛋', at: now() + 271, repeat: '', snoozed: false },
-      { id: 1, kind: 'alarm', type: '闹钟', label: '起床', at: now() + 9 * 3600, repeat: '每个工作日（周一到周五）', snoozed: false },
-      { id: 2, kind: 'reminder', type: '提醒', label: '晾衣服', at: now() + 26 * 3600, repeat: '', snoozed: false, spoken: true },
-    ],
-    missed: [{ kind: 'reminder', label: '吃药', at: now() - 3 * 3600, why: 'unanswered', noted: now() - 3 * 3600 },
-             { kind: 'alarm', label: '起床', at: now() - 20 * 3600, why: 'off', noted: now() - 20 * 3600 }],
-  });
   const steps = [
     ['idle', 4000, () => {
-      handlers.snapshot({ status: { state: 'idle', connected: false, uploading: false, volume: 60 }, alarms: alarmsDemo(),
+      handlers.snapshot({ status: { state: 'idle', connected: false, uploading: false, volume: 60 },
                           bluetooth: { available: true, enabled: true, powered: true, window: 0, name: 'ThinkSmart View', direct: false,
                                        devices: [{ address: 'AA:BB:CC:DD:EE:01', name: '小张的 iPhone', paired: true, connected: true, streaming: true,
                                                    title: '晴天', artist: '周杰伦' },
@@ -1221,9 +1318,6 @@ const demo = DEMO === null ? null : (() => {
     }],
     ['settings', 3000, () => $('settings').classList.add('on')],
     [null, 300, () => $('settings').classList.remove('on')],
-    ['ring', 4000, () => handlers.alarms(Object.assign(alarmsDemo(), {
-      ringing: { items: [alarmsDemo().items[1]], notes: [], started: now() } }))],
-    [null, 300, () => handlers.alarms(alarmsDemo())],
     ['connecting', 1600, () => state('connecting', false)],
     ['listening', 3200, () => state('listening')],
     [null, 500, () => say('user', '明天北京天气怎么样？适合去爬山吗？')],
@@ -1283,7 +1377,6 @@ const demo = DEMO === null ? null : (() => {
     else if (path === '/api/text') answer(body.text);
     else if (path === '/api/abort') { done(true); state('idle'); }
     else if (path === '/api/end') { done(); state('idle', false); }
-    else if (path.startsWith('/api/alarms/')) handlers.alarms(Object.assign({}, ui.alarms, { ringing: null }));
     return Promise.resolve();
   }
 

@@ -4,7 +4,7 @@ Speaks recorded questions to the hub like the client does (16 kHz Opus, 20 ms fr
 aborts at the given phase, then checks nothing of the old turn comes back and the next question
 is answered normally. Uses its own device id, so the device's own conversation is not touched.
 
-  python tests/device_instant_abort.py ws://<device-ip>:16689/xiaozhi/v1/ q1.wav q2.wav q3.wav [rounds]
+  python test/device_instant_abort.py ws://<device-ip>:16689/xiaozhi/v1/ q1.wav q2.wav q3.wav [rounds]
 
 q1: a question with a long answer ("讲个故事"), q2: a short one, q3: "我刚才让你做过什么" (context check).
 WAVs: 16 kHz mono 16-bit. Needs opuslib_next and websockets (the hub's venv has both).

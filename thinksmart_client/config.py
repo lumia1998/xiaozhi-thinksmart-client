@@ -38,12 +38,12 @@ DEFAULTS = {
     'follow_up_seconds': 20,   # after a reply: keep listening this long for a follow-up
     'conversation_idle_seconds': 20,   # close the connection after this much user silence
     'port': 8090,
+    'camera_device': '',
     'sleep': {'enabled': False, 'start': '22:00', 'end': '07:00'},   # sleep.py
-    'brightness': 100,    # the screen's 0-100, set on the page or by voice (no automatic brightness: the user asked)
+    'brightness': 100,
+    'brightness_schedule': {'enabled': False, 'start': '00:00', 'end': '06:00', 'level': 30},
     # blank this long after the last touch or conversation (device.SCREEN_OFF_MINUTES); off: never
     'screen_off': {'enabled': True, 'minutes': 5},
-    'alarm_volume': 70,   # countdowns, alarms and reminders ring at this, whatever the device volume (alarms.py)
-    'alarm_tone': 'coffee',   # alarms.TONES
     'bluetooth': True,    # the Bluetooth speaker switch (bt.py): off powers the adapter down
 }
 

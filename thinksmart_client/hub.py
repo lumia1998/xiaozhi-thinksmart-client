@@ -2,7 +2,7 @@
 
 Client → hub: hello (features mcp, Opus 16 kHz mono), listen start/stop, abort, mcp
 replies, binary Opus frames. Hub → client: hello (session_id, its audio parameters), stt,
-llm, tts start/sentence_start/stop, mcp requests, server, binary Opus frames.
+llm, tts start/sentence_start/stop, media, mcp requests, server, binary Opus frames.
 """
 import asyncio
 import json
@@ -45,7 +45,8 @@ class Hub:
             # vad_end: the hub says when its VAD decides the user finished (the page shows "recognising")
             # ready_on_tts_start: messages and audio are handled in order, so audio right after "tts start"
             # plays (the hub need not wait before a cached reply such as "我在")
-            'features': {'mcp': True, 'vad_end': True, 'ready_on_tts_start': True},
+            'features': {'mcp': True, 'vad_end': True, 'ready_on_tts_start': True,
+                         'media': {'version': 1, 'kinds': ['image', 'video', 'audio']}},
             'audio_params': {'format': 'opus', 'sample_rate': 16000, 'channels': 1, 'frame_duration': 20},
         }))
         try:

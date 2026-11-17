@@ -1,57 +1,141 @@
-# xiaozhi-thinksmart-client
+# ThinkSmart Client
 
-联想 ThinkSmart View（CD-18781Y）上的语音客户端：本地唤醒词「小麦小麦」、回声消除、按小智协议连 [xiaozhi-hub-server](https://github.com/justhalfbit/xiaozhi-hub-server)，并在 `127.0.0.1:8090` 提供展示屏上的对话界面。
+运行在联想 ThinkSmart View（CD-18781Y）Ubuntu 带屏音箱上的语音客户端。通过本地唤醒词「小葵」发起对话，连接 [xiaozhi-hub-server](https://github.com/lumia1998/xiaozhi-hub-server) 完成语音识别、模型调用、视觉分析和语音合成。
 
-它是 [thinksmart-ubuntu-image](https://github.com/justhalfbit/thinksmart-ubuntu-image) 系统镜像的一部分，刷机和安装见那边的 README；装好的设备在设置页「软件更新」里从本仓库的 Release 在线更新（系统镜像的系统层更新包也放在本仓库的 Release 里，和客户端一起显示、一起装；这些文件是设备自动下载的，刷机镜像在系统镜像仓库）。
+客户端负责麦克风、扬声器、屏幕、摄像头采集及设备控制。界面由设备本机的 Web 服务提供，默认地址为 `http://127.0.0.1:8090/`。
 
-## 结构
+## 功能
 
-| 位置 | 作用 |
+| 功能 | 当前实现 |
 | --- | --- |
-| `thinksmart_client/app.py` | 状态机：唤醒 → 聆听 → 回复 → 10 秒追问窗口 → 待机；打断（回复期间麦克风不上传，只有唤醒词或按钮能打断，打断时告诉网关播了多少毫秒；网关识别中、思考中也能打断，那句话作废，网关确认打断之前收到的旧一轮文字和回复都不要）、按住说话、文字提问、按模型分开的对话记录 |
-| `tests/` | 单元测试（不需要设备的声卡和库），运行方法见文件开头 |
-| `thinksmart_client/audio.py` | 麦克风 16 kHz、扬声器 48 kHz，都走 PipeWire；回声消除只在对话中或刚播过声音时运行 |
-| `thinksmart_client/aec.py` | WebRTC APM 回声消除（改自 py-xiaozhi 的 AecEngine） |
-| `thinksmart_client/kws.py` | sherpa-onnx 唤醒词，单线程、40 ms 一批、安静时跳过（声音停后再解码 1 秒）、模型前加 10 dB 增益 |
-| `thinksmart_client/wake_verify.py` | 唤醒二次确认（默认关，`wake_verify: 'hub'` 打开）：命中后把最近 3 秒交给网关识别（`POST /kiosk/asr`），按拼音比对唤醒词；`pinyin.txt` 是它用的常用字拼音表（`eval/wake/make_pinyin.py` 生成） |
-| `eval/wake/` | 唤醒评测：漏唤醒率、误唤醒率，见其中 README |
-| `thinksmart_client/hub.py` | 小智 WebSocket 协议（hello 只声明 `mcp`：不让网关一听到声音就打断回复） |
-| `thinksmart_client/mcp.py` | 给模型用的设备工具：音量、睡眠时段、屏幕亮度、倒计时/闹钟/提醒（新建、查看、取消、再睡）、闹钟音量 |
-| `thinksmart_client/alarms.py` | 倒计时、闹钟、提醒（共用一种数据，可循环：每天、工作日、每周几、每月几号）：模型只传意思，几点由这里算；存在 `~/.local/share/thinksmart-client/alarms/`（临时文件 + fsync + 改名，防断电）；系统对时前不判断；关机错过不到 1 小时的开机补响一次；闹钟和倒计时没人停就响 10 分钟，提醒是短钢琴和弦加念内容、反复 3 分钟；错过的显示在首页，点「知道了」清掉；铃声 5 选 1：钢琴曲「咖啡时光」（默认）「晨曦」「元气早晨」「阳光小跳跃」和程序合成的木琴 |
-| `thinksmart_client/device.py` | 屏幕和按键：给系统熄屏程序写提示（对话中不熄屏、用户设的自动熄屏（1/3/5/10/30 分钟或不熄，默认 5 分钟，触摸和对话结束都按它）、唤醒词亮屏、睡眠时段调暗、用户设的亮度 0-100），读音量键和麦克风开关 |
-| `thinksmart_client/sleep.py` | 睡眠时段（可跨午夜）：回复音量减半、屏幕调暗、补报不主动念；设置存在用户配置里（`config.save`），页面设置页和语音工具都能改 |
-| `thinksmart_client/bt.py`、`bt_helper.py` | 蓝牙音箱：手机配对后把歌放到设备上。`bt_helper.py` 用系统自带的 python3（dbus、GLib）管 BlueZ：配对代理（免密码，只在设置页点了「添加手机」后的 3 分钟内接受，配过的手机设为信任、以后点一下就重连）、开关、忘记手机、闹钟响时让手机暂停；`bt.py` 在手机推流时用 `pw-record` 录它的音源，混进 `audio.Background`（和回复相加后送喇叭，回声消除知道它，放歌时照样能唤醒）；对话时压到 20%、闹钟响或试听铃声时静音。需要系统层的 `bluetooth/` 配置（手机的声音变成音源而不是直接送喇叭）；没有时手机照样能放，但声音绕过客户端，放歌时很难唤醒，设置页会提示 |
-| `thinksmart_client/opus.py` | 系统 libopus 的 ctypes 封装 |
-| `thinksmart_client/web.py` | 页面、事件流（SSE）、按钮接口 |
-| `web/` | 界面（设置页里的 WiFi 由展示屏外壳执行：页面通过 WebKit 的 `thinksmart` 消息通道请外壳扫描、连接、忘记网络，和系统镜像欢迎页同一套代码；输入框用外壳注入的系统键盘；外壳太旧时卡片只提示）：正式版是 `v2/`（带表情的光球，首页 `/` 和 `/v2`），第一版 `index.html`、`app.css`、`app.js` 留在 `/v1`；`test/` 是 GPU 排查用的测试页；另有提示音、厂商图标 |
-| `models/kws-zh/` | 唤醒词模型 |
-| `deploy/thinksmart-client.service` | 系统服务 |
-| `deploy/bootstrap-updater` | 服务启动前以 root 运行：20261101 镜像的设备上更新服务只认客户端，发布包里带了新的（`deploy/updater/`，发布时由系统镜像仓库的 `make-release.py --system` 放进去），比设备上的新就换上；已经是新的就什么都不做 |
+| 语音交互 | 本地唤醒、点按说话、按住说话、文字提问、唤醒词或按钮打断 |
+| 音频处理 | PipeWire 音频输入输出、回声消除、Opus 流式传输 |
+| 屏幕界面 | 仪表盘、对话页、可搜索的本地已载入聊天记录、模型选择和设备设置 |
+| 多媒体 | 显示图片，点击播放视频和音频，提供进度与音量控件 |
+| 摄像头视觉 | 模型按需调用设备拍照工具，上传单帧图片到 Hub 识别并播报 |
+| 语音控制 | 绝对或相对调节音量、常规亮度，查询和修改定时亮度 |
+| 定时亮度 | 每天指定时段使用设定亮度，结束后恢复常规亮度，支持跨午夜 |
+| 自动熄屏 | 设置空闲熄屏时间，触摸、唤醒及对话时配合系统亮屏 |
+| 蓝牙音箱 | 手机配对、连接管理，对话时降低背景音乐音量 |
+| 服务器设置 | 配置 Hub HTTP/WebSocket 地址、检测连接、保存设备配对令牌 |
 
-## 接口（只监听本机）
+## 使用示例
 
-- `GET /events`：事件流，`snapshot`、`state`、`message`、`thread`、`model`、`level`、`toast`、`volume`（`source`：`key`/`voice`/`page`；`ring` 为 true 是响铃时音量键调的这一次铃声）、`alarms`（列表、错过的、是否对过时、正在响的、闹钟音量和铃声）、`bluetooth`（见 `/api/bluetooth`）
-- `POST /api/wake`、`/api/end`、`/api/abort`、`/api/ptt/start`、`/api/ptt/stop`
-- `POST /api/text {"text": "..."}`：文字提问（服务端按识别出的话处理）
-- `POST /api/model {"kind": "...", "vendor": "..."}`：切换模型（转给服务端的 `/kiosk/llm/use`）
-- `POST /api/brightness {"level": 0-100}`：屏幕亮度（存用户配置，默认 100，没有自动亮度；睡眠时段内设的亮度用到时段结束）
-- `POST /api/screen-off {"enabled": true, "minutes": 1|3|5|10|30}`：自动熄屏（两个字段可以只传一个；存用户配置，默认开、5 分钟；关掉就不熄屏）
-- `POST /api/volume {"volume": 0-100}`：设备音量（和音量键、语音同一个值；响铃时改的是响完要恢复的那个）
-- `POST /api/alarm-volume {"volume": 0-100}`：闹钟音量（存用户配置，默认 70）；`POST /api/alarm-tone {"tone": "coffee|morning|bright|hop|marimba", "preview": false}`：选铃声，`preview` 为 true 时用闹钟音量试听一段（前 8 秒），`{"stop": true}` 停止试听（关设置页时页面会发）
-- `POST /api/alarms/delete {"id": n}`、`/api/alarms/stop`、`/api/alarms/snooze`（正在响或 15 分钟内响过的那条 10 分钟后再响）、`/api/alarms/missed/clear`
-- `POST /api/bluetooth`：`{"enabled": bool}` 蓝牙音箱开关（存用户配置 `bluetooth`，关掉就让蓝牙断电），`{"window": bool}` 打开或关掉 3 分钟的「添加手机」，`{"remove": "地址"}` 忘记一台手机，`{"disconnect": "地址"}` 断开。状态在事件 `bluetooth`（快照里也有）：`available`、`enabled`、`powered`、`window`（剩余秒数）、`name`（手机上看到的名字）、`direct`（手机的声音绕过了客户端：系统层太旧）、`devices`（`address`、`name`、`paired`、`connected`、`streaming`、`title`、`artist`）
-- `POST /api/power-off`：关机（`systemctl halt`，插着电也不会自己重新开机，屏幕变黑后等 10 秒再拔电源；正在更新时不执行）。页面先收到 `power {"state": "off"}` 显示「正在关机」
-- `POST /api/history/clear {}` 或 `{"memory_only": true}`：清除聊天记录（转给服务端的 `/kiosk/chat/clear`，只清服务端本机存的所有模型的记录和总结记忆，Claude Code、Grok Bot 自己的会话不动；`memory_only` 只清记忆）。聊天页的记录来自服务端存的 `GET /kiosk/chat/history`（每个模型最近 50 条），没连着时载入，断开、重启后还在；说「清除聊天记录」确认后服务端发 `{"type": "chat_history", "state": "cleared"}`，页面清空
-- 配对校验：展示屏设置页可粘贴后台生成的一次性配对令牌。令牌只保存在客户端用户配置并以握手请求头发送，页面读取设置时只显示“已配置/未配置”，不会回显令牌；清除后需要重新配对。
+- “小葵，今天有什么安排？”
+- “音量调到 50”“声音小一点”
+- “屏幕亮一点”“亮度调到 60”
+- “每天零点到早上六点，亮度设为 30%”
+- “用摄像头看看我手里是什么”“读一下前面的文字”
 
-## 第三方
+设备操作由 Hub 模型调用 MCP 工具执行。摄像头语音交互依赖可用的系统摄像头和 Hub 视觉模型。
 
-- `thinksmart_client/webrtc_apm/`：py-xiaozhi 的 WebRTC APM ctypes 封装和 arm64 库，MIT（`LICENSE-py-xiaozhi`）
-- `models/kws-zh/`：sherpa-onnx 中文唤醒词模型（wenetspeech），Apache-2.0
-- `web/logos/`：LobeHub icons 1.95.1，MIT
-- `web/sounds/alarm-*.ogg`（Ogg Opus 64 kbit/s，客户端用系统 libopus 解码）：闹钟铃声（原创曲「咖啡时光」「晨曦」「元气早晨」「阳光小跳跃」和提醒用的短和弦），用 [Salamander Grand Piano V3](https://freepats.zenvoid.org/Piano/acoustic-grand-piano.html) 的采样渲染（Alexander Holm，CC BY 3.0）；渲染脚本在 `tools/ringtone/`
-- 依赖：numpy、sounddevice、soxr、websockets、aiohttp、sherpa-onnx
+## 运行环境
 
-## 许可
+- Ubuntu 24.04 ARM64 ThinkSmart View，Python 3.12。
+- PipeWire、`wpctl`、PortAudio、libopus、libspeexdsp，以及仓库中的唤醒词模型。
+- 屏幕亮度和自动熄屏由系统镜像的屏幕管理程序执行，客户端写入 `/run/user/1000/thinksmart-screen.json`。
+- WiFi 设置和屏幕键盘依赖设备展示屏外壳提供的 WebKit 消息通道。
+- 摄像头采集需要 FFmpeg。内置传感器还需要系统层的 S5KC505A 驱动、CAMSS 和 libcamera 软件 ISP。
 
-MIT，见 [LICENSE](LICENSE)。各厂商 logo 是其所有者的商标，只用来标识对应的服务。本项目是个人项目，与联想（Lenovo）及各模型厂商没有任何关系。
+系统镜像的刷机与设备基础服务可参考 [thinksmart-ubuntu-image](https://github.com/justhalfbit/thinksmart-ubuntu-image)。
+
+### 启动客户端
+
+在已具备上述系统组件的 Ubuntu 设备上，按 `requirements.lock` 准备 Python 环境后运行
+
+```sh
+git clone https://github.com/lumia1998/xiaozhi-thinksmart-client.git
+cd xiaozhi-thinksmart-client
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.lock
+.venv/bin/python -m thinksmart_client
+```
+
+生产服务模板位于 [deploy/thinksmart-client.service](deploy/thinksmart-client.service)，默认从 `/opt/thinksmart/client/current` 启动。部署时按实际发布目录准备 Python 环境、`models/` 和文件权限，再安装服务并重启 `thinksmart-client.service`。
+
+## 连接 Hub
+
+在设置页填写服务器地址，例如 `http://192.0.2.30:16688`。WebSocket 地址可自动推导，也可单独填写为 `ws://192.0.2.30:16689/xiaozhi/v1/`。设备配对令牌在 Hub 后台生成后填入客户端。
+
+用户配置保存在 `~/.config/thinksmart-client/config.json`。主要字段包括 `hub_http`、`hub_ws`、`device_id`、`client_id`、`pairing_token`、`brightness`、`brightness_schedule` 和 `screen_off`。
+
+Hub 的 `/kiosk/*` 接口当前执行本机来源检查。分开部署客户端与 Hub 时，语音 WebSocket 和带认证的视觉上传可独立工作，模型列表及服务器历史同步需要部署层提供受控的本机转发。客户端设置中的“检测连接”可用于排查接口可达性。
+
+## 定时亮度
+
+设置页分别保存“常规亮度”和“定时亮度”。定时亮度默认关闭，预设为每天 `00:00–06:00` 使用 `30%`。
+
+```json
+{
+  "brightness": 80,
+  "brightness_schedule": {
+    "enabled": true,
+    "start": "00:00",
+    "end": "06:00",
+    "level": 30
+  }
+}
+```
+
+这个示例在零点使用 30%，六点恢复 80%。关闭定时亮度后立即恢复常规亮度，重启后按设备本地时间重新计算。在时段内调整常规亮度，新的常规值于时段结束后应用。
+
+睡眠时段单独控制主动播报，屏幕亮度由亮度设置控制。本地闹钟、倒计时和响铃提醒已从客户端移除。
+
+## 多媒体与摄像头
+
+客户端在握手中声明 `media` 能力，接收 Hub 下发的图片、视频和音频 HTTP(S) 直链。音视频由用户点击播放，播放期间暂停麦克风上传并保持亮屏，唤醒、新回复或结束操作会暂停媒体。实际可播放编码取决于设备浏览器。协议见 [Hub 多媒体文档](https://github.com/lumia1998/xiaozhi-hub-server/blob/main/hub-docs/media-output.md)。
+
+`self.camera.take_photo` 按需拍摄并调用 Hub 的 `/mcp/vision/explain`，返回识别文字供模型回答。屏幕提示拍照与识别状态，打断、结束或断线会取消请求。
+
+默认优先使用 `/opt/thinksmart-camera/bin/cam`，在 `/dev/shm` 临时目录中等待曝光稳定，采集结束后转为 JPEG 并清理文件。`camera_device` 可指定外接 V4L2 节点，通过 FFmpeg 采集。摄像头驱动、设备树、libcamera 和设备节点访问权限由系统层准备。
+
+Hub 需配置 `selected_module.VLLM` 和对应 `VLLM` 提供商，视觉认证令牌通过 MCP 初始化获取。客户端向已配置的 Hub 地址上传图片。
+
+## 本机接口
+
+| 接口 | 用途 |
+| --- | --- |
+| `GET /events` | 状态、模型、对话、音量和蓝牙 SSE 事件 |
+| `GET /api/history` | 获取客户端当前已载入的各模型聊天记录 |
+| `POST /api/text` | 发送文字提问 |
+| `POST /api/wake`、`/api/abort`、`/api/end` | 唤醒、打断、结束对话 |
+| `POST /api/ptt/start`、`/api/ptt/stop` | 按住说话 |
+| `POST /api/model` | 请求切换模型 |
+| `POST /api/volume` | 设置设备音量 |
+| `POST /api/brightness`、`/api/brightness-schedule` | 常规与定时亮度 |
+| `POST /api/screen-off`、`/api/sleep` | 自动熄屏与睡眠时段 |
+| `POST /api/media/playback` | 媒体播放状态和心跳 |
+| `GET/POST /api/server`、`POST /api/server/check` | 服务器配置与连接检测 |
+| `POST /api/history/clear`、`/api/bluetooth`、`/api/power-off` | 清理记录、蓝牙设置、关机 |
+
+## 代码与测试
+
+| 目录 | 内容 |
+| --- | --- |
+| `thinksmart_client/` | 设备状态机、音频、协议、MCP、摄像头和设置 |
+| `web/v2/` | 当前屏幕界面及 Radix 色阶 |
+| `models/kws-zh/` | 中文唤醒词模型 |
+| `deploy/` | 客户端服务配置 |
+| `test/` | Ubuntu 测试、依赖清单和测试配置 |
+| `eval/` | 唤醒和延迟评测 |
+
+测试步骤见 [test/README.md](test/README.md)。在 Ubuntu 上执行
+
+```sh
+python3 -m venv test/.venv
+test/.venv/bin/python -m pip install -r test/requirements.txt
+PYTHONDONTWRITEBYTECODE=1 test/.venv/bin/python -m pytest -c test/pytest.ini -q
+```
+
+测试产物使用 `test/.local/`、`test/.venv/` 和 `test/.pytest_cache/`。
+
+## 来源与许可
+
+[MIT License](LICENSE)。基于 [justhalfbit/xiaozhi-thinksmart-client](https://github.com/justhalfbit/xiaozhi-thinksmart-client) 的 ThinkSmart 客户端继续开发。
+
+- WebRTC APM 封装来源于 py-xiaozhi，MIT，见 `thinksmart_client/webrtc_apm/LICENSE-py-xiaozhi`。
+- 唤醒模型使用 sherpa-onnx 中文关键词识别模型，Apache-2.0。
+- 厂商图标来自 LobeHub icons，MIT；Radix UI Colors 许可见 `web/v2/RADIX-LICENSE`。
+- 仓库保留的历史铃声音频使用 Salamander Grand Piano V3 采样，Alexander Holm，CC BY 3.0，相关脚本位于 `tools/ringtone/`。
+
+厂商名称及图标用于标识服务，相关商标归其所有者所有。

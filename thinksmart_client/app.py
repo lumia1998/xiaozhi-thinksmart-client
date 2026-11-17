@@ -19,18 +19,12 @@ States shown to the page: idle, connecting, listening, thinking, speaking.
   "清除聊天记录") clears the hub's copy too.
 - The screen stays on while not idle and blanks after the user's screen-off (device.Screen); the volume
   keys and the mic-mute switch are handled here too (device.Keys).
-- Reports (Grok Bot finishing later) are polled from the hub: when idle the client chimes and
-  connects so the hub reads them; in the sleep hours (sleep.py) they wait on the screen and the
-  screen is dimmed.
-- Countdowns, alarms and reminders (alarms.py) are kept and rung here; the model only sets them
-  through device tools. A ring lights the screen, switches the speaker to the alarm volume until it
-  stops (the wake word, 停止 or 再睡 on the page; given up on after 10 minutes, a reminder (its chime and words over and over) after 3) and stops whatever
-  the conversation was doing. The volume keys then change only that ring's volume.
+- Reports are polled from the hub and wait on the screen during quiet hours.
+- Scheduled brightness applies daily and restores the normal brightness after the interval.
 - Bluetooth speaker (bt.py): a phone's music is mixed under the replies, lowered from the wake to the
-  end of the reply, muted while an alarm rings (the phone is asked to pause then and is not resumed).
+  end of the reply.
 """
 import asyncio
-import io
 import json
 import logging
 import os
@@ -42,9 +36,9 @@ from pathlib import Path
 import aiohttp
 import numpy as np
 
-from . import alarms, bt, config, mcp, sleep, wake_verify, server_settings
-from .audio import OUT_RATE, Audio, load_wav
-from .device import DIM_LEVEL, Keys, Screen, normalize_screen_off
+from . import brightness_schedule, bt, camera, config, mcp, media, sleep, wake_verify, server_settings
+from .audio import OUT_RATE, Audio
+from .device import Keys, Screen, normalize_screen_off
 from .hub import Hub
 from .silence import SilenceTimer
 from .kws import Kws
@@ -70,10 +64,6 @@ REPORT_POLL = 10         # seconds between asking the hub for pending reports (l
 HISTORY_LIMIT = 50       # messages per model shown from the hub's saved conversations
 MODEL_POLL = 30          # seconds between asking the hub for its models (changes made in its admin page)
 MODEL_RETRY = 3          # until the hub answers (it takes over a minute to start after a boot)
-ALARM_VOLUME = 70        # the alarms' own volume until the user sets one
-TTS_TIMEOUT = 30         # seconds for the hub to synthesise a reminder's words
-PREVIEW_SECONDS = 8      # the settings' 试听 plays at most this much of a tone
-CLIP_GAP = 0.8           # seconds of silence after each spoken reminder in a ring
 BACKGROUND_DUCKED = 0.2  # a phone's music (Bluetooth speaker) under a conversation
 
 # Hub vendor id -> (logo file, company). Unknown vendors are guessed from the model name.
@@ -120,15 +110,6 @@ def marimba(notes, gap=0.1, peak=0.2):
     return np.repeat(x[:, None], 2, axis=1)
 
 
-def overlay(base, extra, at):
-    """`extra` mixed into `base` starting `at` seconds in (both 48 kHz stereo)."""
-    start = int(OUT_RATE * at)
-    out = np.zeros((max(len(base), start + len(extra)), 2), np.float32)
-    out[:len(base)] += base
-    out[start:start + len(extra)] += extra
-    return np.clip(out, -1, 1)
-
-
 C5, E5, G5, A5, B5, C6, D6, E6 = 523.25, 659.25, 783.99, 880.0, 987.77, 1046.5, 1174.66, 1318.5
 
 
@@ -169,6 +150,8 @@ class Client:
         self.cfg = cfg
         self.silence = SilenceTimer(cfg.get('conversation_idle_seconds', 20))
         self.events = Events()
+        self.camera = camera.Camera(cfg, self.events.publish)
+        self.camera_requests = set()
         self.loop = None
         self.state = 'idle'
         self.uploading = False
@@ -197,6 +180,7 @@ class Client:
         self.entry = None             # the model this connection talks to
         self.models = {'current': None, 'options': []}
         self.bot_msg = None
+        self.media_until = 0.0
         self.decoder = None
         self._seq = 0
         self._send_q = None
@@ -222,12 +206,18 @@ class Client:
             log.warning('invalid sleep setting %r, using the default', cfg.get('sleep'))
             self.sleep = sleep.normalize(None)
         self.sleeping = False
-        self.bright_in_sleep = False  # the user set a brightness in these sleep hours: don't dim
+        self.brightness_schedule = brightness_schedule.normalize(None)
+        try:
+            self.brightness_schedule = brightness_schedule.normalize(cfg.get('brightness_schedule'))
+        except ValueError:
+            log.warning('invalid brightness schedule, using defaults')
+        self.schedule_active = False
         level = cfg.get('brightness')
         if isinstance(level, bool) or not isinstance(level, (int, float)):
             log.warning('invalid brightness %r, using 100', level)
             level = 100
         self.screen.level = max(0, min(100, int(level)))
+        self.normal_brightness = self.screen.level
         try:
             self.screen_off = normalize_screen_off(cfg.get('screen_off'))
         except ValueError:
@@ -239,17 +229,6 @@ class Client:
         self.keys = Keys(on_step=self.volume_step, on_mic=self._on_mic)
         self.volume = None            # the device volume 0-100 (keys, voice, the page), as last read or set
         self.volume_lock = asyncio.Lock()   # one change of the speaker's volume at a time
-        self.held_volume = None       # a ring or a tone preview has the speaker: the device volume to put back
-        self.alarms = alarms.Alarms()
-        self.clock_ok = False         # the system clock is synchronised: alarms are judged
-        self.ring = None              # the ring going on: {'items', 'notes', 'started', 'volume', 'stop', 'task'}
-        self.preview = None           # task playing a ring tone from the settings
-        level = cfg.get('alarm_volume', ALARM_VOLUME)
-        if isinstance(level, bool) or not isinstance(level, (int, float)):
-            log.warning('invalid alarm_volume %r, using %d', level, ALARM_VOLUME)
-            level = ALARM_VOLUME
-        self.alarm_volume = max(0, min(100, int(level)))
-        self.alarm_tone = cfg.get('alarm_tone') if cfg.get('alarm_tone') in alarms.TONES else alarms.DEFAULT_TONE
         self.bt = bt.Bluetooth(self.audio.background, self.events.publish, cfg.get('bluetooth') is not False)
 
     # ---- startup ----
@@ -261,11 +240,12 @@ class Client:
         self.keys.start()
         self.screen.release()   # a hold left by a previous run must not keep the screen on
         self._apply_sleep()
+        self._apply_brightness_schedule()
         asyncio.create_task(self._sender())
         asyncio.create_task(self._ticker())
         self.hub_pollers = [asyncio.create_task(self._model_poller()),
                             asyncio.create_task(self._report_poller())]
-        asyncio.create_task(self._alarm_loop())
+        await self.device_volume()
         await self.bt.start()
         asyncio.create_task(self._bluetooth_loop())
 
@@ -309,6 +289,9 @@ class Client:
     # ---- state ----
 
     def set_state(self, state):
+        if state != 'idle' and self.media_active():
+            self.media_until = 0.0
+            self.events.publish('media_pause', {})
         if state not in ('idle', 'listening'):
             self.silence.reset()
         self.audio.aec_hold = self.hub.connected or self.state == 'connecting'
@@ -317,7 +300,7 @@ class Client:
             self.recognising = False
             log.info('state: %s', state)
             # only on a real change: set_state(self.state) just refreshes the page
-            if state == 'idle':
+            if state == 'idle' and not self.media_active():
                 self.screen.release()
             else:
                 self.screen.hold()
@@ -328,7 +311,33 @@ class Client:
                 'recognising': self.recognising or self.awaiting_text,
                 'mic': self.keys.mic_on, 'sleep': {**self.sleep, 'active': self.sleeping},
                 'brightness': self.brightness(), 'screen_off': self.screen_off,
-                'reports': self.reports, 'volume': self.volume}
+                'brightness_schedule': {**self.brightness_schedule, 'active': self.schedule_active},
+                'reports': self.reports, 'volume': self.volume, 'media_playing': self.media_active()}
+
+    def media_active(self):
+        return getattr(self, 'media_until', 0.0) > time.monotonic()
+
+    async def media_playback(self, playing, heartbeat=False):
+        if playing:
+            if heartbeat and not self.media_active():
+                return {'ok': False, 'error': '播放已暂停'}
+            if self.powering_off:
+                return {'ok': False, 'error': '设备正在关机'}
+            if not self.media_active():
+                interrupt = self.hub.connected and (self.in_turn() or self.uploading or self.listen_after_reply)
+                self.listen_after_reply = False
+                self.uploading = False
+                if interrupt:
+                    await self.abort()
+                await self.stop_uploading()
+            self.media_until = time.monotonic() + 15
+            self.screen.hold()
+        else:
+            self.media_until = 0.0
+            if self.state == 'idle':
+                self.screen.release()
+        self.events.publish('state', self.status())
+        return {'ok': True}
 
     def mic_off_toast(self):
         if self.keys.mic_on:
@@ -351,7 +360,7 @@ class Client:
                 'hub': self.hub_seen > 0 and time.monotonic() - self.hub_seen < 30}
 
     def snapshot(self):
-        return {'status': self.status(), 'models': self.models, 'alarms': self.alarm_view(), 'bluetooth': self.bt.view(),
+        return {'status': self.status(), 'models': self.models, 'bluetooth': self.bt.view(),
                 'thread': {'entry': self.view_entry(), 'messages': self.threads.get(self.view_entry(), [])}}
 
     async def set_server(self, http, websocket='', pairing_token=None, clear_pairing=False):
@@ -365,7 +374,7 @@ class Client:
             raise ValueError('配对令牌格式不正确')
         token_changed = bool(token) or bool(clear_pairing)
         async with self.connecting:
-            if self.state != 'idle' or self.ring or self.powering_off:
+            if self.state != 'idle' or self.powering_off:
                 raise ValueError('请在对话和响铃结束后修改服务器')
             same_server = all(self.cfg.get(k) == v for k, v in values.items())
             if same_server and not token_changed:
@@ -488,10 +497,6 @@ class Client:
 
     async def wake(self, source='button', chimed=False):
         self.screen.poke()
-        if self.ring:
-            await self.stop_alarm()   # the wake word stops a ring (no snooze: "再睡 10 分钟" is said next)
-        if self.preview:
-            await self._stop_preview()   # a tone being tried: the answer must not queue behind it
         if self.mic_off_toast():
             return
         if self.in_turn():
@@ -527,6 +532,10 @@ class Client:
         self.set_state('idle')
 
     async def abort(self, reason=None):
+        await self._cancel_camera_requests()
+        if self.media_active():
+            await self.media_playback(False)
+            self.events.publish('media_pause', {})
         now = time.monotonic()
         phase = 'recognising' if self.vad_ended or self.awaiting_text else self.state
         # how much of this reply was actually heard: the hub keeps only that in the context
@@ -558,6 +567,10 @@ class Client:
     async def end(self):
         """End the conversation: stop everything and close the channel, which clears the hub's context."""
         self.silence.reset()
+        await self._cancel_camera_requests()
+        if self.media_active():
+            await self.media_playback(False)
+            self.events.publish('media_pause', {})
         if self.in_turn():
             await self.abort()
         self.uploading = False
@@ -627,7 +640,7 @@ class Client:
             log.info('the hub confirmed the abort after %.0f ms', (time.monotonic() - self.abort_pending) * 1000)
             self.abort_pending = None
             return True   # our own abort: what comes next was already decided
-        if kind == 'stt' or (kind == 'tts' and state in ('start', 'sentence_start')):
+        if kind in ('stt', 'media') or (kind == 'tts' and state in ('start', 'sentence_start')):
             log.info('dropped from the interrupted turn: %s %s', kind, state or msg.get('text'))
             return True
         return False
@@ -743,6 +756,7 @@ class Client:
                 # the hub cut the reply off (a newer question); an older hub doesn't say so, but then
                 # more than the usual tail is still queued
                 if msg.get('interrupted', self.audio.player.buffered() > NORMAL_STOP_TAIL):
+                    await self._cancel_camera_requests()
                     self.audio.player.trim(0)
                     if self.bot_msg:
                         self.bot_msg['interrupted'] = True
@@ -762,8 +776,32 @@ class Client:
                     self.set_state('listening')
                 else:
                     self.set_state('idle')
+        elif kind == 'media':
+            if msg.get('version') != 1 or msg.get('session_id') != self.hub.session_id or self.mute_audio:
+                return
+            items = media.normalize(msg.get('items'))
+            media_id = msg.get('id')
+            if not items or not isinstance(media_id, str) or not media_id:
+                return
+            key = f"{self.hub.session_id}:{media_id}"
+            if any(item.get('media_id') == key for rows in self.threads.values() for item in rows):
+                return
+            self.add_message('bot', '', media=items, media_id=key)
+            self.question = None
+            self.screen.poke()
         elif kind == 'mcp':
             payload = msg.get('payload') or {}
+            if (payload.get('method') == 'tools/call'
+                    and (payload.get('params') or {}).get('name') == 'self.camera.take_photo'):
+                if self.camera_requests or self.abort_pending or self.mute_audio:
+                    await self.hub.send({'type': 'mcp', 'payload': {
+                        'jsonrpc': '2.0', 'id': payload.get('id'), 'result': {'isError': True,
+                        'content': [{'type': 'text', 'text': '摄像头请求已取消或正在处理中，请重新提问'}]}}})
+                    return
+                task = asyncio.create_task(self._camera_request(payload))
+                self.camera_requests.add(task)
+                task.add_done_callback(self.camera_requests.discard)
+                return
             reply = await mcp.handle(payload, client=self)
             if reply:
                 await self.hub.send({'type': 'mcp', 'payload': reply})
@@ -776,6 +814,26 @@ class Client:
             self.events.publish('thread', {'entry': self.view_entry(), 'messages': [], 'reset': True})
         elif kind == 'server':
             log.info('server message: %s', msg)
+
+    async def _cancel_camera_requests(self):
+        tasks = tuple(getattr(self, 'camera_requests', ()))
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        if hasattr(self, 'camera'):
+            await self.camera.cancel()
+
+    async def _camera_request(self, payload):
+        session = self.hub.session_id
+        try:
+            reply = await mcp.handle(payload, client=self)
+            if reply and self.hub.connected and self.hub.session_id == session:
+                await self.hub.send({'type': 'mcp', 'payload': reply})
+        except asyncio.CancelledError:
+            pass
+        except Exception:
+            log.warning('camera request could not be completed')
 
     async def _refresh_after_question(self, m):
         """The hub may have switched models for this question (called one by name, or changed in its
@@ -831,6 +889,9 @@ class Client:
             log.exception('cannot decode reply audio')
 
     async def _on_closed(self):
+        await self._cancel_camera_requests()
+        if hasattr(self, 'camera'):
+            self.camera.configure({})
         # the conversation is over (the hub's idle timeout, an exit word, the end button)
         self.silence.reset()
         self.play('bye')
@@ -850,13 +911,13 @@ class Client:
 
     # ---- conversation threads (one per model, like the hub keeps them) ----
 
-    def add_message(self, role, text):
+    def add_message(self, role, text, **extra):
         entry = self.view_entry()
         if entry != self.entry:
             self.entry = entry
             self.events.publish('thread', {'entry': entry, 'messages': self.threads.get(entry, [])})
         self._seq += 1
-        m = {'id': self._seq, 'role': role, 'text': text, 'time': time.time(), 'entry': entry}
+        m = {'id': self._seq, 'role': role, 'text': text, 'time': time.time(), 'entry': entry, **extra}
         self.threads.setdefault(entry, []).append(m)
         del self.threads[entry][:-200]
         self.publish_message(m)
@@ -878,7 +939,8 @@ class Client:
         if not data.get('ok') or self.hub.connected:
             return
         self.threads = {entry: [{'id': f"h{m['id']}", 'role': m['role'], 'text': m['text'], 'time': m['time'],
-                                 'entry': entry, **({'interrupted': True} if m.get('interrupted') else {})}
+                                 'entry': entry, **({'interrupted': True} if m.get('interrupted') else {}),
+                                 **({'media': media.normalize(m['media'])} if m.get('media') else {})}
                                 for m in items]
                         for entry, items in (data.get('models') or {}).items()}
         self.history_loaded = True
@@ -932,9 +994,6 @@ class Client:
 
     def _apply_sleep(self):
         self.sleeping = sleep.active(self.sleep)
-        if not self.sleeping:
-            self.bright_in_sleep = False
-        self.screen.dim(self.sleeping and not self.bright_in_sleep)
 
     async def set_sleep(self, **changes):
         """Change the sleep setting (page or voice); raises ValueError for a bad time."""
@@ -949,22 +1008,36 @@ class Client:
     # ---- screen brightness (the blanker sets the backlight: device.Screen, idle-blanker.py) ----
 
     def brightness(self):
-        """level: the screen's 0-100 now (the dim level while the sleep hours dim it, unless the
-        user's is darker); dimmed: held dim for the sleep hours."""
-        level, dimmed = self.screen.level, self.screen.dimmed
-        return {'level': min(level, DIM_LEVEL) if dimmed else level, 'dimmed': dimmed}
+        return {'level': self.screen.level, 'normal': self.normal_brightness,
+                'dimmed': self.schedule_active}
+
+    def _apply_brightness_schedule(self, now=None):
+        active = brightness_schedule.active(self.brightness_schedule, now)
+        level = self.brightness_schedule['level'] if active else self.normal_brightness
+        changed = active != self.schedule_active or level != self.screen.level
+        self.schedule_active = active
+        self.screen.brightness(level)
+        if changed:
+            self.events.publish('state', self.status())
+
+    async def set_brightness_schedule(self, **changes):
+        setting = brightness_schedule.normalize(self.brightness_schedule, changes)
+        config.save(brightness_schedule=setting)
+        self.brightness_schedule = setting
+        self._apply_brightness_schedule()
+        self.events.publish('state', self.status())
+        return {**setting, 'active': self.schedule_active}
 
     async def set_brightness(self, level=None, change=None):
-        """Page or voice: level (0-100) or change (relative, from the level now). A level set in
-        the sleep hours is kept until they end."""
+        """Set the normal brightness restored outside the scheduled interval."""
         if level is None:
             if change is None:
                 raise ValueError('level or change is needed')
-            level = self.brightness()['level'] + int(change)
-        self.screen.brightness(max(0, min(100, int(level))))
-        self.bright_in_sleep = self.sleeping
-        config.save(brightness=self.screen.level)
-        self._apply_sleep()
+            level = self.normal_brightness + int(change)
+        level = max(0, min(100, int(level)))
+        config.save(brightness=level)
+        self.normal_brightness = level
+        self._apply_brightness_schedule()
         log.info('brightness: %s', self.screen.level)
         self.set_state(self.state)
         return self.brightness()
@@ -1005,7 +1078,7 @@ class Client:
         if self.sleeping:
             # just light the screen with the notice; it blanks again after the user's screen-off
             self.screen.poke()
-        elif self.state == 'idle' and not self.hub.connected and not self.ring:
+        elif self.state == 'idle' and not self.hub.connected:
             # connected and idle, the hub reads it by itself
             self.play('report')
             asyncio.create_task(self.play_reports())
@@ -1029,198 +1102,62 @@ class Client:
             await self.poll_reports()
             await asyncio.sleep(REPORT_POLL)
 
-    # ---- volume: the device's (keys, voice, the page) and the alarms' own ----
+    # ---- volume ----
 
     async def device_volume(self):
-        """The device volume, also while a ring has the speaker at the alarm volume."""
-        if self.held_volume is not None:
-            return self.held_volume
         volume = await mcp.get_volume()
         if volume is not None:
             self.volume = volume
         return volume
 
     async def set_volume(self, volume, source='page'):
-        """The device volume (page, voice, keys). While a ring or a preview has the speaker, it is what
-        comes back afterwards."""
         async with self.volume_lock:
             volume = await self._apply_volume(volume)
         self.events.publish('volume', {'volume': volume, 'source': source})
         return volume
 
+    async def adjust_volume(self, volume=None, change=None):
+        if (volume is None) == (change is None):
+            raise ValueError('请提供一个音量值或一个调整量')
+        value = volume if volume is not None else change
+        if type(value) is not int or not (-100 if change is not None else 0) <= value <= 100:
+            raise ValueError('音量须为 0 至 100，调整量须为 -100 至 100 的整数')
+        async with self.volume_lock:
+            if change is not None:
+                current = await mcp.get_volume()
+                if current is None:
+                    raise ValueError('无法读取当前音量')
+                volume = current + change
+            volume = await self._apply_volume(volume)
+        self.events.publish('volume', {'volume': volume, 'source': 'voice'})
+        return volume
+
     async def _apply_volume(self, volume):
         """set_volume under volume_lock."""
         volume = max(0, min(100, int(volume)))
-        if self.held_volume is not None:
-            self.held_volume = volume
-            self._write_ring_state()
-        else:
-            await mcp.set_volume(volume)
+        await mcp.set_volume(volume)
         self.volume = volume
         return volume
 
     async def volume_step(self, delta):
-        """A volume key. Key repeat fires every ~100 ms: one change at a time, each from the current
-        volume. While an alarm rings only that ring is louder or quieter: the alarm volume setting and
-        the device volume (put back when it stops) stay."""
-        if self.ring:
-            async with self.volume_lock:
-                if not self.ring:
-                    return
-                self.ring['volume'] = max(0, min(100, self.ring['volume'] + delta))
-                if self.held_volume is not None:
-                    await mcp.set_volume(self.ring['volume'])
-                # else the ring hasn't switched the speaker yet: it will, to this volume (_hold_speaker)
-            self.events.publish('volume', {'volume': self.ring['volume'], 'source': 'key', 'ring': True})
-            return
         async with self.volume_lock:   # read and write as one step, or two quick presses make one
-            current = self.held_volume if self.held_volume is not None else await mcp.get_volume()
+            current = await mcp.get_volume()
             if current is None:
                 return
             volume = await self._apply_volume(current + delta)
         self.events.publish('volume', {'volume': volume, 'source': 'key'})
 
-    def _ring_state_path(self):
-        return self.alarms.dir / 'ring.json'
-
-    def _write_ring_state(self):
-        try:
-            alarms.write_atomic(self._ring_state_path(), json.dumps({'volume': self.held_volume}).encode())
-        except OSError as e:
-            log.warning('cannot save the volume to put back: %s', e)
-
-    async def _hold_speaker(self, level):
-        """Switch the speaker to `level` (or level() read under the lock: a ring's volume the keys may
-        have changed meanwhile) for a ring or a preview; the device volume is saved first, so that a
-        crash or a power cut in between still gets it back (_restore_volume)."""
-        async with self.volume_lock:
-            level = level() if callable(level) else level
-            if self.held_volume is None:
-                before = await mcp.get_volume()
-                self.held_volume = before if before is not None else self.volume
-                if self.held_volume is not None:
-                    self._write_ring_state()
-            await mcp.set_volume(level)
-
-    async def _release_speaker(self):
-        async with self.volume_lock:
-            if self.held_volume is None:
-                return
-            volume, self.held_volume = self.held_volume, None
-            await mcp.set_volume(volume)
-            self.volume = volume
-            try:
-                self._ring_state_path().unlink()
-            except FileNotFoundError:
-                pass
-
-    async def _restore_volume(self):
-        """At start: a ring that never ended (the client crashed, the power was cut) left the speaker at
-        the alarm volume. Put the device volume back."""
-        path = self._ring_state_path()
-        try:
-            before = json.loads(path.read_text())['volume']
-        except FileNotFoundError:
-            before = None
-        except (ValueError, KeyError, TypeError):
-            log.warning('%s is unreadable', path)
-            before = None
-        if isinstance(before, (int, float)) and not isinstance(before, bool):
-            log.info('the last ring did not end: volume back to %d', before)
-            await mcp.set_volume(before)
-        try:
-            path.unlink()
-        except FileNotFoundError:
-            pass
-        await self.device_volume()
-
-    async def set_alarm_volume(self, volume=None, change=None):
-        """Page or voice: volume (0-100) or change (from the alarm volume now)."""
-        if volume is None:
-            if change is None:
-                raise ValueError('volume or change is needed')
-            volume = self.alarm_volume + int(change)
-        self.alarm_volume = max(0, min(100, int(volume)))
-        config.save(alarm_volume=self.alarm_volume)
-        log.info('alarm volume: %d', self.alarm_volume)
-        self.publish_alarms()
-        return self.alarm_volume
-
-    def set_alarm_tone(self, name):
-        if name not in alarms.TONES:
-            raise ValueError(f'tone must be one of {list(alarms.TONES)}')
-        self.alarm_tone = name
-        config.save(alarm_tone=name)
-        self.publish_alarms()
-        return name
-
-    async def preview_tone(self, name):
-        """The settings' 试听: one phrase of the tone at the alarm volume."""
-        if name not in alarms.TONES:
-            raise ValueError(f'tone must be one of {list(alarms.TONES)}')
-        if self.ring:
-            return
-        # cancel the old one now (a task cancelled before it first runs never would) and let the new
-        # one wait for it to put the volume back
-        previous = self.preview
-        if previous:
-            previous.cancel()
-        self.preview = asyncio.create_task(self._play_preview(name, previous))
-
-    async def _play_preview(self, name, previous=None):
-        if previous and not previous.done():
-            await asyncio.wait([previous])   # not `await previous`: a cancel of this one must still stop it
-        sound = alarms.tone(name)
-        n = min(len(sound) - int(OUT_RATE * alarms.TONE_GAP), int(OUT_RATE * PREVIEW_SECONDS))
-        sound = sound[:n].copy()                       # a piece: only its first seconds, faded out
-        fade = min(n, int(OUT_RATE * 0.6))
-        sound[n - fade:] *= np.linspace(1, 0, fade, dtype=np.float32)[:, None]
-        try:
-            await self._hold_speaker(self.alarm_volume)
-            self.audio.player.push(sound)
-            await asyncio.sleep(n / OUT_RATE + 0.1)
-        finally:
-            self.audio.player.trim(0)
-            # cancelled (another tap, the settings closed, a ring) halfway through putting the volume
-            # back would leave the speaker at the alarm volume: let it finish
-            await asyncio.shield(self._release_speaker())
-
-    async def _stop_preview(self):
-        task, self.preview = self.preview, None
-        if task and not task.done():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-            async with self.volume_lock:
-                pass   # its shielded _release_speaker has put the volume back
-
-    # ---- countdowns, alarms and reminders (alarms.py) ----
-
     # ---- Bluetooth speaker (bt.py) ----
 
     def background_target(self):
-        """How loud a phone's music plays: muted while an alarm rings or a tone is tried, lowered while
-        talking (from the wake to the end of the reply) or a local sound plays, else full."""
-        # a preview that played to its end stays in self.preview (finished) until the next one:
-        # only one still playing mutes the phone
-        if self.ring or (self.preview and not self.preview.done()):
-            return 0.0
         if self.state != 'idle' or self.audio.player.buffered() > 0:
             return BACKGROUND_DUCKED
         return 1.0
 
     async def _bluetooth_loop(self):
-        paused_for = None   # the ring the phones were asked to pause for
         while True:
             await asyncio.sleep(0.1)
             self.audio.background.target = self.background_target()
-            if self.ring and self.ring is not paused_for:
-                paused_for = self.ring
-                if self.bt.streaming():
-                    log.info('alarm: asking the phone to pause')
-                    await self.bt.pause()   # it doesn't resume by itself: the user plays on from the phone
 
     async def bluetooth(self, enabled=None, window=None, remove=None, disconnect=None):
         """The page's Bluetooth controls: the switch (stored), the "add a phone" window, forgetting a phone."""
@@ -1235,208 +1172,6 @@ class Client:
         if disconnect:
             ok = await self.bt.disconnect(disconnect)
         return ok
-
-    def alarm_view(self):
-        now = time.time()
-        ring = self.ring
-        return {'synced': self.clock_ok, 'items': [self.alarms.view(i, now) for i in self.alarms.active()],
-                'missed': self.alarms.missed[::-1],
-                'ringing': ring and {'items': [self.alarms.view(i, now) for i in ring['items']],
-                                     'notes': ring['notes'], 'started': ring['started']},
-                'volume': self.alarm_volume, 'tone': self.alarm_tone, 'tones': alarms.TONES}
-
-    def publish_alarms(self):
-        self.events.publish('alarms', self.alarm_view())
-
-    async def create_alarm(self, kind, label='', say='', repeat=None, **when):
-        """From the model (mcp.py). Raises ValueError with a sentence for it."""
-        if not alarms.clock_synced():
-            raise ValueError('设备时间还没和网络对上（刚开机或没联网），现在设不准，请过一会儿再试')
-        item = self.alarms.create(kind, label, say, repeat, **when)
-        if kind == 'reminder':
-            asyncio.create_task(self._make_clip(item))
-        self.publish_alarms()
-        return self.alarms.view(item)
-
-    async def delete_alarm(self, item_id):
-        """Page or voice. A ringing entry stops ringing first."""
-        if self.ring and any(i['id'] == item_id for i in self.ring['items']):
-            if len(self.ring['items']) == 1:
-                await self.stop_alarm()
-            else:
-                self.ring['items'] = [i for i in self.ring['items'] if i['id'] != item_id]
-        item = self.alarms.remove(item_id)
-        self.publish_alarms()
-        return item and self.alarms.view(item)
-
-    async def snooze_alarm(self, minutes=alarms.SNOOZE_MINUTES):
-        """再睡: the entry ringing now, or rung in the last 15 minutes, rings again in `minutes`
-        (hung on that entry: its repeat and words stay). [] when there is none."""
-        ringing = list(self.ring['items']) if self.ring else []
-        await self.stop_alarm()
-        found = self.alarms.snooze(minutes, ringing=ringing)
-        self.publish_alarms()
-        return [self.alarms.view(i) for i in found]
-
-    def clear_missed(self):
-        self.alarms.clear_missed()
-        self.publish_alarms()
-
-    async def _make_clip(self, item):
-        """A reminder's words, synthesised by the hub now and kept with it: when it is due it is
-        played without the hub. If that fails it only rings, and the screen shows the words."""
-        text = item['say'] or (f"提醒你，{item['label']}" if item['label'] else '提醒时间到了')
-        wav = await self._speech(text)
-        if self.alarms.set_clip(item['id'], wav):
-            self.publish_alarms()
-
-    async def _speech(self, text):
-        try:
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=TTS_TIMEOUT)) as s:
-                async with s.post(self.cfg['hub_http'] + '/kiosk/tts', json={'text': text}) as r:
-                    if r.status == 200:
-                        return await r.read()
-                    log.warning('the hub did not synthesise %r: %s %s', text, r.status, await r.text())
-        except Exception as e:
-            log.warning('the hub did not synthesise %r: %s', text, e)
-        return None
-
-    async def _alarm_loop(self):
-        await self._restore_volume()
-        last_tidy = 0.0
-        while True:
-            try:
-                now = time.time()
-                if self.clock_ok and now - last_tidy > 60:   # by a clock that is right
-                    last_tidy = now
-                    before = (len(self.alarms.items), len(self.alarms.missed))
-                    self.alarms.tidy(now)
-                    if (len(self.alarms.items), len(self.alarms.missed)) != before:
-                        self.publish_alarms()
-                await self._alarm_tick(now)
-            except Exception:
-                log.exception('alarm scheduler')
-            await asyncio.sleep(1)
-
-    async def _alarm_tick(self, now):
-        synced = alarms.clock_synced()
-        if synced != self.clock_ok:
-            self.clock_ok = synced
-            log.info('system clock %s', 'synchronised: alarms on' if synced else 'not synchronised: alarms paused')
-            self.publish_alarms()
-        if not synced:
-            return
-        if self.ring and self.ring['closing']:
-            return   # the ring is ending: what is due now rings on its own once it has
-        before = len(self.alarms.missed)
-        items, notes = self.alarms.take_due(now, self.ring['items'] if self.ring else ())
-        if items and self.ring:
-            # due while another rings: they ring together, and the ring lasts its full time from now
-            self.ring['items'] += items
-            self.ring['notes'] += notes
-            self.ring['fired'].update((i['id'], now) for i in items)
-            self.ring['joined'].append((time.monotonic(), all(i['kind'] == 'reminder' for i in items)))
-            log.info('joined the ring: %s', [(i['id'], i['kind'], i['label']) for i in items])
-            self.publish_alarms()
-        elif items:
-            self.ring = {'items': items, 'notes': notes, 'started': now, 'volume': self.alarm_volume,
-                         'stop': asyncio.Event(), 'joined': [], 'fired': {}, 'closing': False}
-            self.ring['task'] = asyncio.create_task(self._ringing(self.ring))
-        elif len(self.alarms.missed) != before:
-            self.publish_alarms()
-
-    async def _ringing(self, ring):
-        answered = False
-        log.info('ringing: %s%s', [(i['id'], i['kind'], i['label']) for i in ring['items']],
-                 f" ({'；'.join(ring['notes'])})" if ring['notes'] else '')
-        try:
-            await self._stop_preview()
-            if self.in_turn():
-                await self.abort()
-            self.uploading = self.listen_after_reply = False
-            self.deadline = None
-            self.set_state('idle')
-            self.screen.alarm(True)
-            self.publish_alarms()
-            await self._hold_speaker(lambda: ring['volume'])
-            note = asyncio.create_task(self._speech('，'.join(ring['notes']))) if ring['notes'] else None
-            clips, phrase, chime = {}, None, None
-            start = time.monotonic()
-            end, reminder_end, round_over = start + alarms.RING_SECONDS, start + alarms.REMINDER_SECONDS, 0.0
-            while True:
-                now = time.monotonic()
-                for at, only_reminders in ring['joined']:   # each one that joined rings its full time too
-                    end = max(end, at + (alarms.REMINDER_SECONDS if only_reminders else alarms.RING_SECONDS))
-                    if only_reminders:
-                        reminder_end = max(reminder_end, at + alarms.REMINDER_SECONDS)
-                # only reminders: the chime and their words a few times; an alarm or countdown among
-                # them: the tone over and over, up to RING_SECONDS
-                reminders = all(i['kind'] == 'reminder' for i in ring['items'])
-                if reminders and now >= reminder_end and now >= round_over:   # its words finished, not cut off
-                    break
-                if not reminders and now >= end:
-                    break
-                if self.audio.player.buffered() < 0.3 and not (reminders and now >= reminder_end):
-                    words = []
-                    if note and note.done():
-                        words += self._clip_sound(note.result())   # once, in the first round it is ready for
-                        note = None
-                    for item in ring['items']:
-                        if item['kind'] == 'reminder' and item.get('clip'):
-                            if item['id'] not in clips:
-                                clips[item['id']] = self._clip_sound(self.alarms.clip_path(item))
-                            words += clips[item['id']]
-                    if reminders:
-                        chime = alarms.reminder_chime() if chime is None else chime
-                        sound = overlay(chime, np.concatenate(words), alarms.CHIME_SPEECH_AT) if words else chime
-                        round_over = now + self.audio.player.buffered() + len(sound) / OUT_RATE
-                        sound = np.concatenate([sound, np.zeros((int(OUT_RATE * alarms.REMINDER_PAUSE), 2), np.float32)])
-                    else:
-                        phrase = alarms.tone(self.alarm_tone) if phrase is None else phrase
-                        sound = np.concatenate([phrase] + words)
-                    self.audio.player.push(sound)
-                try:
-                    await asyncio.wait_for(ring['stop'].wait(), 0.1)
-                    answered = True
-                    break
-                except asyncio.TimeoutError:
-                    pass
-            if not answered:
-                log.info('nobody stopped the ring in %.0f s: noted as missed', time.monotonic() - start)
-        except Exception:
-            # whoever awaits this (stop_alarm from the wake word) must not fail with it
-            log.exception('the ring failed')
-        finally:
-            ring['closing'] = True   # nothing joins any more: it would be finished without having rung
-            self.audio.player.trim(0)
-            self.screen.alarm(False)
-            await self._release_speaker()
-            self.alarms.finish(ring['items'], ring['started'], answered, fired=ring['fired'])
-            self.ring = None
-            self.publish_alarms()
-            self.set_state(self.state)
-
-    @staticmethod
-    def _clip_sound(source):
-        """A spoken clip (a wav file, or the hub's wav bytes) and a pause after it, as a list to concatenate."""
-        if not source:
-            return []
-        try:
-            x = load_wav(io.BytesIO(source) if isinstance(source, bytes) else source)
-        except Exception as e:
-            log.warning('cannot play a reminder clip: %s', e)
-            return []
-        return [x, np.zeros((int(OUT_RATE * CLIP_GAP), 2), np.float32)]
-
-    async def stop_alarm(self):
-        """停止 on the page, or the wake word: the ring ends (a one-off is done, a repeating one waits
-        for its next time)."""
-        ring = self.ring
-        if not ring:
-            return False
-        ring['stop'].set()
-        await asyncio.shield(ring['task'])
-        return True
 
     # ---- models (the hub's local-only /kiosk/llm endpoints) ----
 
@@ -1507,7 +1242,7 @@ class Client:
         waiting = (self.state in ('idle', 'listening') and not self.ptt_held
                    and not self.awaiting_text and not self.recognising and not self.hub_pending
                    and not self.listen_after_reply and not self.abort_pending
-                   and self.audio.player.buffered() <= 0.02)
+                   and self.audio.player.buffered() <= 0.02 and not self.media_active())
         return self.silence.observe(now, connected=self.hub.connected, waiting=waiting,
                                     speech=self.uploading and self.audio.mic_level > SPEECH_RMS)
 
@@ -1524,9 +1259,16 @@ class Client:
 
     async def _ticker(self):
         last_level = 0.0
+        last_brightness = 0.0
         while True:
             await asyncio.sleep(0.1)
             now = time.monotonic()
+            if now - last_brightness >= 1:
+                self._apply_brightness_schedule()
+                last_brightness = now
+            if getattr(self, 'media_until', 0.0) and not self.media_active():
+                await self.media_playback(False)
+                self.events.publish('media_pause', {})
             stalled = self.audio.stalled()
             if stalled:
                 # PipeWire restarted (or died): the streams won't come back by themselves. systemd

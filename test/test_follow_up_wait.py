@@ -18,7 +18,7 @@ import pytest
 from test_barge_in import ask, make_client, tick, toasts
 from thinksmart_client import app
 
-MISS = '没听清，可以再说一次「小麦小麦」'
+MISS = '没听清，可以再说一次「小葵」'
 
 
 async def follow_up(c, features=None):

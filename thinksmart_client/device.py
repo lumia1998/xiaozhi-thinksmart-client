@@ -1,7 +1,7 @@
 """The device around the conversation: the screen and the hardware keys.
 
 The system's screen blanker (thinksmart-ubuntu-image/screen/idle-blanker.py) owns the backlight; we only
-tell it when a conversation keeps the screen on, the sleep hours, the user's brightness and screen-off (HINT_PATH). It already wakes on any input
+tell it when a conversation keeps the screen on, the effective brightness and screen-off (HINT_PATH). It already wakes on any input
 device, the keys and the switch included; the wake word is the one thing it can't see. The volume keys and the mic-mute
 switch are read straight from their input devices (the service binds /dev/input read-only).
 """
@@ -19,8 +19,6 @@ log = logging.getLogger(__name__)
 
 HINT_PATH = Path(os.environ.get('XDG_RUNTIME_DIR', '/run/user/1000')) / 'thinksmart-screen.json'
 SCREEN_OFF_MINUTES = (1, 3, 5, 10, 30)   # the settings page's choices; 5 by default (config.py)
-# the blanker's MANUAL_MIN (0%), MAX_BRIGHTNESS (100%) and DIM_BRIGHTNESS (sleep hours) on the 0-100 scale
-DIM_LEVEL = round((1600 - 1400) * 100 / (4095 - 1400))
 
 EV_KEY, EV_SW = 0x01, 0x05
 KEY_VOLUMEDOWN, KEY_VOLUMEUP = 114, 115
@@ -44,14 +42,12 @@ def normalize_screen_off(setting, changes=None):
 
 
 class Screen:
-    """Hints for the blanker: hold() while a conversation goes on, release() when it ends, dim()
-    for the sleep hours, brightness() for the user's level, blank_after() for the user's
+    """Hints for the blanker: hold() while a conversation goes on, release() when it ends,
+    brightness() for the effective level, blank_after() for the user's
     screen-off. A new seq is activity (wakes the screen); a setting change alone is not."""
 
     def __init__(self):
         self.held = None
-        self.ringing = False         # an alarm rings: on until it stops, whatever the conversation does
-        self.dimmed = False
         self.level = 100             # the user's 0-100
         self.idle = 300              # the user's screen-off in seconds, 0: never
         self._seq = time.time_ns()   # unique across client restarts
@@ -66,21 +62,9 @@ class Screen:
             self.held = False
             self._write(activity=True)
 
-    def alarm(self, on):
-        """An alarm rings: light the screen (it may be blank) and keep it on; when it stops, blank after
-        the user's screen-off."""
-        if self.ringing != on:
-            self.ringing = on
-            self._write(activity=True)
-
     def poke(self):
         """Wake the screen now (a wake word, a report); it blanks after the user's screen-off."""
         self._write(activity=True)
-
-    def dim(self, on):
-        if self.dimmed != on:
-            self.dimmed = on
-            self._write(activity=False)
 
     def brightness(self, level):
         if self.level != level:
@@ -95,7 +79,7 @@ class Screen:
     def _write(self, activity):
         if activity:
             self._seq += 1
-        hint = {'hold': bool(self.held or self.ringing), 'dim': self.dimmed, 'seq': self._seq,
+        hint = {'hold': bool(self.held), 'dim': False, 'seq': self._seq,
                 'brightness': self.level, 'idle': self.idle}
         if not hint['hold'] and self.idle:
             hint['after'] = self.idle   # for a blanker older than "idle": the time after a conversation
@@ -122,9 +106,7 @@ def input_device(name):
 
 
 class Keys:
-    """Volume up (gpio-keys), volume down (pm8941_resin) and the mic-mute switch (gpio-keys).
-    on_step(±VOLUME_STEP) is a coroutine: the client knows whether an alarm is ringing (the keys then
-    change only that ring's volume)."""
+    """Volume up, volume down and the mic-mute switch, with an async volume-step callback."""
 
     def __init__(self, on_step, on_mic):
         self.on_step = on_step

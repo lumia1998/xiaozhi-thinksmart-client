@@ -56,6 +56,16 @@ def make_app(client: Client):
         asyncio.create_task(client.say(body.get('text', '')))
         return web.json_response({'ok': True})
 
+    async def history(_request):
+        return web.json_response({'threads': client.threads}, headers={'Cache-Control': 'no-store'})
+
+    async def media_playback(request):
+        body = await request.json()
+        if (not isinstance(body, dict) or not isinstance(body.get('playing'), bool)
+                or not isinstance(body.get('heartbeat', False), bool)):
+            return web.json_response({'ok': False, 'error': '播放状态格式不正确'}, status=400)
+        return web.json_response(await client.media_playback(body['playing'], body.get('heartbeat', False)))
+
     async def model(request):
         body = await request.json()
         return web.json_response(await client.set_model(body.get('kind'), body.get('vendor'), body.get('entry')))
@@ -84,6 +94,18 @@ def make_app(client: Client):
             return web.json_response({'ok': False, 'error': str(e)}, status=400)
         return web.json_response({'ok': True, 'screen_off': value})
 
+    async def brightness_schedule(request):
+        try:
+            body = await request.json()
+            if not isinstance(body, dict):
+                raise ValueError('定时亮度设置格式不正确')
+            value = await client.set_brightness_schedule(**body)
+        except (ValueError, TypeError) as error:
+            return web.json_response({'ok': False, 'error': str(error)}, status=400)
+        except OSError:
+            return web.json_response({'ok': False, 'error': '保存失败，请检查设备存储空间'}, status=500)
+        return web.json_response({'ok': True, 'brightness_schedule': value})
+
     async def volume(request):
         body = await request.json()
         try:
@@ -91,46 +113,6 @@ def make_app(client: Client):
         except (TypeError, ValueError) as e:
             return web.json_response({'ok': False, 'error': str(e)}, status=400)
         return web.json_response({'ok': True, 'volume': value})
-
-    async def alarm_volume(request):
-        body = await request.json()
-        try:
-            value = await client.set_alarm_volume(body.get('volume'))
-        except (TypeError, ValueError) as e:
-            return web.json_response({'ok': False, 'error': str(e)}, status=400)
-        return web.json_response({'ok': True, 'volume': value})
-
-    async def alarm_tone(request):
-        body = await request.json()
-        try:
-            if body.get('stop'):
-                await client._stop_preview()      # the settings closed while a tone was being tried
-            elif body.get('preview'):
-                await client.preview_tone(body.get('tone'))
-            else:
-                client.set_alarm_tone(body.get('tone'))
-        except ValueError as e:
-            return web.json_response({'ok': False, 'error': str(e)}, status=400)
-        return web.json_response({'ok': True})
-
-    async def alarm_delete(request):
-        body = await request.json()
-        try:
-            item = await client.delete_alarm(int(body.get('id')))
-        except (TypeError, ValueError):
-            return web.json_response({'ok': False, 'error': 'id must be a number'}, status=400)
-        return web.json_response({'ok': bool(item), **({} if item else {'error': '这一条已经没有了'})})
-
-    async def alarm_snooze(_request):
-        found = await client.snooze_alarm()
-        return web.json_response({'ok': bool(found), **({} if found else {'error': '没有刚响过的闹钟'})})
-
-    async def alarm_stop(_request):
-        return web.json_response({'ok': await client.stop_alarm()})
-
-    async def alarm_missed_clear(_request):
-        client.clear_missed()
-        return web.json_response({'ok': True})
 
     async def clear_history(request):
         body = await request.json()
@@ -211,16 +193,13 @@ def make_app(client: Client):
     app.router.add_post('/api/ptt/stop', action(client.ptt_stop))
     app.router.add_post('/api/model', model)
     app.router.add_post('/api/text', text)
+    app.router.add_get('/api/history', history)
+    app.router.add_post('/api/media/playback', media_playback)
     app.router.add_post('/api/sleep', sleep_setting)
     app.router.add_post('/api/brightness', brightness)
+    app.router.add_post('/api/brightness-schedule', brightness_schedule)
     app.router.add_post('/api/screen-off', screen_off)
     app.router.add_post('/api/volume', volume)
-    app.router.add_post('/api/alarm-volume', alarm_volume)
-    app.router.add_post('/api/alarm-tone', alarm_tone)
-    app.router.add_post('/api/alarms/delete', alarm_delete)
-    app.router.add_post('/api/alarms/snooze', alarm_snooze)
-    app.router.add_post('/api/alarms/stop', alarm_stop)
-    app.router.add_post('/api/alarms/missed/clear', alarm_missed_clear)
     app.router.add_post('/api/reports/play', action(client.play_reports))
     app.router.add_post('/api/history/clear', clear_history)
     app.router.add_post('/api/bluetooth', bluetooth)
