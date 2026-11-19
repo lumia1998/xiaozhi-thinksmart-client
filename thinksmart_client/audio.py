@@ -66,6 +66,7 @@ class Player:
     def __init__(self):
         self._lock = threading.Lock()
         self._chunks = []
+        self._output_marker = None
         self._pos = 0
         self.level = 0.0
         self.last_sound = 0.0   # monotonic time something was last played
@@ -77,7 +78,7 @@ class Player:
         self._size = 0          # samples in _chunks
         self.dropped = 0        # samples refused by push() (buffer full)
 
-    def push(self, stereo):
+    def push(self, stereo, on_output=None):
         """Queue sound; refused while MAX_BUFFER seconds are already queued. The newest is dropped,
         not the oldest: the oldest is what is playing (cutting it would click), and if the speaker
         stopped nothing is heard either way (Audio.stalled() restarts the client)."""
@@ -88,12 +89,15 @@ class Player:
                 self.dropped += len(stereo)
                 return
             self.dropped = 0
+            if on_output is not None:
+                self._output_marker = (self._size - self._pos, on_output)
             self._chunks.append(stereo)
             self._size += len(stereo)
 
-    def pull(self, n):
+    def pull(self, n, dac_delay=0):
         out = np.zeros((n, 2), dtype=np.float32)
         got = 0
+        callback = None
         with self._lock:
             while got < n and self._chunks:
                 chunk = self._chunks[0]
@@ -105,6 +109,15 @@ class Player:
                     self._chunks.pop(0)
                     self._size -= len(chunk)
                     self._pos = 0
+            if self._output_marker:
+                offset, notify = self._output_marker
+                if offset < got:
+                    callback = notify
+                    self._output_marker = None
+                else:
+                    self._output_marker = (offset - got, notify)
+        if callback is not None:
+            callback(time.monotonic() + dac_delay + offset / OUT_RATE)
         if got and self._fade_in:
             k = min(FADE, got)
             out[:k] *= _ramp(k)
@@ -134,6 +147,7 @@ class Player:
         keep = max(int(keep_seconds * OUT_RATE), FADE)
         with self._lock:
             kept, total = [], -self._pos
+            self._output_marker = None
             for c in self._chunks:
                 if total >= keep:
                     break
@@ -258,7 +272,7 @@ class Audio:
         self.last_out = time.monotonic()
         if status and len(self.player.late) < 100:
             self.player.late.append(str(status))
-        out = self.player.pull(frames)
+        out = self.player.pull(frames, max(0, _time.outputBufferDacTime - _time.currentTime))
         bg = self.background.pull(frames)
         if bg is not None:
             out = np.clip(out + bg, -1.0, 1.0)

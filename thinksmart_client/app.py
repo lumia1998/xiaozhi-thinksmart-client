@@ -28,6 +28,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import socket
 import time
 import urllib.parse
@@ -148,6 +149,8 @@ class Events:
 class Client:
     def __init__(self, cfg):
         self.cfg = cfg
+        from .agenda_voice import AgendaRecorder
+        self.agenda_recorder = AgendaRecorder()
         self.silence = SilenceTimer(cfg.get('conversation_idle_seconds', 20))
         self.events = Events()
         self.camera = camera.Camera(cfg, self.events.publish)
@@ -252,6 +255,9 @@ class Client:
     # ---- microphone (worker thread) ----
 
     def _on_block(self, block, wake_block):
+        recorder = getattr(self, 'agenda_recorder', None)
+        if recorder and recorder.feed(block):
+            return
         # While streaming to the hub the wake word isn't needed (speech already reaches it), and
         # the CPU it would take is better left to the hub's speech recognition. wake_block: what the
         # wake word hears (during a reply, echo-cancelled without suppressing the voice; audio.py)
@@ -289,6 +295,10 @@ class Client:
     # ---- state ----
 
     def set_state(self, state):
+        if state != 'idle' and getattr(self, 'agenda_recorder', None):
+            self.agenda_recorder.reset()
+        if state not in ('thinking', 'speaking'):
+            self.tool_status = None
         if state != 'idle' and self.media_active():
             self.media_until = 0.0
             self.events.publish('media_pause', {})
@@ -309,6 +319,7 @@ class Client:
     def status(self):
         return {'state': self.state, 'connected': self.hub.connected, 'uploading': self.uploading,
                 'recognising': self.recognising or self.awaiting_text,
+                'tool_hint': (getattr(self, 'tool_status', None) or ('', ''))[1],
                 'mic': self.keys.mic_on, 'sleep': {**self.sleep, 'active': self.sleeping},
                 'brightness': self.brightness(), 'screen_off': self.screen_off,
                 'brightness_schedule': {**self.brightness_schedule, 'active': self.schedule_active},
@@ -347,6 +358,8 @@ class Client:
         return True
 
     def _on_mic(self, on):
+        if not on and getattr(self, 'agenda_recorder', None):
+            self.agenda_recorder.reset()
         log.info('mic switch: %s', 'on' if on else 'off')
         self.events.publish('toast', {'kind': 'info', 'text': '麦克风已打开' if on else '麦克风已关'})
         if not on and self.uploading:
@@ -532,6 +545,8 @@ class Client:
         self.set_state('idle')
 
     async def abort(self, reason=None):
+        self.active_trace = None
+        self.reply_timing = None
         await self._cancel_camera_requests()
         if self.media_active():
             await self.media_playback(False)
@@ -629,7 +644,7 @@ class Client:
         pending = getattr(self, 'choice_pending', None)
         if pending:
             return {'ok': False, 'error': '正在提交选择'}
-        if self.in_turn():
+        if self.in_turn() and not card_id.startswith('ha_'):
             await self.abort()
         if not await self.ensure_connected():
             return {'ok': False, 'error': '语音连接失败，请重试'}
@@ -673,7 +688,7 @@ class Client:
             log.info('the hub confirmed the abort after %.0f ms', (time.monotonic() - self.abort_pending) * 1000)
             self.abort_pending = None
             return True   # our own abort: what comes next was already decided
-        if kind in ('stt', 'media', 'assistant_text', 'choice_card') or (kind == 'tts' and state in ('start', 'sentence_start')):
+        if kind in ('stt', 'media', 'assistant_text', 'choice_card', 'tool_status') or (kind == 'tts' and state in ('start', 'sentence_start')):
             log.info('dropped from the interrupted turn: %s %s', kind, state or msg.get('text'))
             return True
         return False
@@ -682,12 +697,39 @@ class Client:
         kind = msg.get('type')
         if self._stale(msg):
             return
-        if kind == 'stt':
+        if kind == 'tool_status':
+            if msg.get('session_id') != self.hub.session_id or self.state not in ('thinking', 'speaking'):
+                return
+            if 'timing_id' in msg and msg['timing_id'] != getattr(self, 'active_trace', None):
+                return
+            labels = {'weather': '正在查询天气', 'search': '正在联网搜索', 'device': '正在联系设备', 'extension': '正在调用扩展服务'}
+            status_id = msg.get('id')
+            if not isinstance(status_id, str) or not 0 < len(status_id) <= 64:
+                return
+            if msg.get('state') == 'start' and msg.get('category') in labels:
+                self.tool_status = (status_id, labels[msg['category']])
+            elif msg.get('state') == 'end' and getattr(self, 'tool_status', None) and self.tool_status[0] == status_id:
+                self.tool_status = None
+            else:
+                return
+            self.events.publish('state', self.status())
+        elif kind == 'stt':
             text = (msg.get('text') or '').strip()
             if text.startswith('% '):
                 # not speech: the hub's note that the model calls a tool (for the screens of ESP32 boards)
                 log.info('the model calls %s', text[2:])
             elif text:
+                self.tool_status = None
+                trace_id = msg.get('timing_id')
+                received = time.monotonic()
+                self.reply_timing = None
+                self.active_trace = None
+                if isinstance(trace_id, str) and re.fullmatch('[0-9a-f]{32}', trace_id):
+                    self.active_trace = trace_id
+                    end = self.speech_end if msg.get('voice_input') and self.speech_end > self.listen_since else None
+                    self.reply_timing = (trace_id, received, end)
+                    if end is not None:
+                        log.info('turn_latency id=%s stage=speech_end_to_stt ms=%d', trace_id, round((received-end)*1000))
                 if self.speech_end > self.listen_since:
                     log.info('recognised %.1f s after the user stopped talking: %s',
                              time.monotonic() - self.speech_end, text)
@@ -741,6 +783,8 @@ class Client:
             if state != 'sentence_start':
                 log.info('reply %s (%.1f s queued)', state, self.audio.player.buffered())
             if state == 'stop':
+                self.active_trace = None
+                self.reply_timing = None
                 player = self.audio.player
                 log.info('reply audio: %d packets (%d dropped muted), %.2f s; buffer ran dry %d times (last sample %s); '
                          'speaker callback flags %s', self.reply_packets, self.muted_packets, self.reply_samples / OUT_RATE,
@@ -955,11 +999,25 @@ class Client:
             mono = self.decoder.decode(packet)
             self.reply_samples += len(mono)
             self.reply_packets += 1
-            self.audio.player.push(np.repeat(mono[:, None], 2, axis=1))
+            samples = np.repeat(mono[:, None], 2, axis=1)
+            timing = getattr(self, 'reply_timing', None)
+            if timing:
+                self.reply_timing = None
+                trace_id, received, end = timing
+                loop = asyncio.get_running_loop()
+                def report(stamp):
+                    log.info('turn_latency id=%s stage=stt_to_output ms=%d', trace_id, round((stamp-received)*1000))
+                    if end is not None:
+                        log.info('turn_latency id=%s stage=speech_end_to_output ms=%d', trace_id, round((stamp-end)*1000))
+                self.audio.player.push(samples, on_output=lambda stamp: loop.call_soon_threadsafe(report, stamp))
+            else:
+                self.audio.player.push(samples)
         except Exception:
             log.exception('cannot decode reply audio')
 
     async def _on_closed(self):
+        self.active_trace = None
+        self.reply_timing = None
         await self._cancel_camera_requests()
         if hasattr(self, 'camera'):
             self.camera.configure({})

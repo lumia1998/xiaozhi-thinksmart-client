@@ -7,6 +7,7 @@ llm, tts start/sentence_start/stop, media, mcp requests, server, binary Opus fra
 import asyncio
 import json
 import logging
+from pathlib import Path
 
 from websockets.asyncio.client import connect
 from websockets.exceptions import ConnectionClosed
@@ -35,6 +36,7 @@ class Hub:
 
     async def connect(self):
         """Open the channel and exchange hellos; raises on failure."""
+        zone = str(Path('/etc/localtime').resolve()).partition('/zoneinfo/')[2]
         ws = await connect(self.url, additional_headers=self.headers, open_timeout=5,
                            ping_interval=20, ping_timeout=20, close_timeout=3,
                            max_size=10 * 1024 * 1024, compression=None)
@@ -47,7 +49,8 @@ class Hub:
             # plays (the hub need not wait before a cached reply such as "我在")
             'features': {'mcp': True, 'vad_end': True, 'ready_on_tts_start': True,
                          'media': {'version': 1, 'kinds': ['image', 'video', 'audio']},
-                         'rich_text': {'version': 1}, 'choices': {'version': 1}},
+                         'rich_text': {'version': 1}, 'choices': {'version': 1}, 'tool_status': 1,
+                         **({'timezone': zone} if zone else {})},
             'audio_params': {'format': 'opus', 'sample_rate': 16000, 'channels': 1, 'frame_duration': 20},
         }))
         try:

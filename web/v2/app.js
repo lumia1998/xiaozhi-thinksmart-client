@@ -16,11 +16,10 @@ const ui = {
   page: null,
 };
 
-const SUGGEST = [
-  { title: '天气', detail: '明天天气怎么样？', prompt: '明天本地天气怎么样？', icon: 'cloud-sun', style: 'weather' },
-  { title: '音乐', detail: '发现喜欢的音乐', prompt: '推荐几首适合现在听的音乐', icon: 'music-2', style: 'music' },
-  { title: '智能家居', detail: '控制家里的设备', prompt: '帮我看看家里有哪些可以控制的智能设备', icon: 'house', style: 'home' },
-  { title: '计划', detail: '安排这一周', prompt: '帮我安排这周的计划', icon: 'calendar-days', style: 'plan' },
+const PANELS = [
+  { id: 'weather', title: '天气', icon: 'cloud-sun' },
+  { id: 'devices', title: '智能家居', icon: 'house' },
+  { id: 'agenda', title: '计划', icon: 'calendar-days' },
 ];
 
 /* ---- clock ---- */
@@ -101,7 +100,7 @@ function renderStatus() {
   else if (reports && shown === 'idle') text[1] = '有待汇报：点右上角收听，或叫一声「小葵」';
   else if (sleeping && shown === 'idle' && !connected) text[1] = '睡眠时段：汇报不会自动念';
   $('title').innerHTML = text[0];
-  $('hint').textContent = text[1];
+  $('hint').textContent = (['thinking', 'speaking'].includes(shown) && ui.status.tool_hint) || text[1];
   // recognising, thinking or speaking: the turn can be interrupted (the question is dropped if nothing was said yet)
   $('btnAbort').disabled = !ui.status.media_playing && (!connected || !(state === 'speaking' || state === 'thinking' || (ui.status.recognising && !ui.ptt)));
   $('btnEnd').disabled = !connected;
@@ -869,7 +868,11 @@ function renderSide() {
   document.body.classList.toggle('fresh', page === 'dashboard');
   $('welcome').hidden = page !== 'dashboard';
   $('convo').hidden = page !== 'chat';
-  $('pageTitle').textContent = page === 'dashboard' ? '仪表盘' : '对话';
+  const panel = PANELS.find(item => item.id === page);
+  $('displayPanel').hidden = !panel;
+  $('composer').hidden = !!panel;
+  $('pageTitle').textContent = panel?.title || (page === 'dashboard' ? '首页' : '对话');
+  DisplayPanels.navigate(panel);
   $('navDashboard').setAttribute('aria-current', page === 'dashboard' ? 'page' : 'false');
   $('navChat').setAttribute('aria-current', page === 'chat' ? 'page' : 'false');
   $('chatEmpty').hidden = ui.thread.messages.length > 0 || shownState() !== 'idle';
@@ -1278,13 +1281,16 @@ $('messageInput').addEventListener('keydown', event => {
   }
 });
 
-for (const suggestion of SUGGEST) {
-  const b = document.createElement('button');
-  b.className = 'chip feature-' + suggestion.style;
-  b.innerHTML = `<img class="feature-icon" src="/static/v2/icons/${suggestion.icon}.svg" alt=""><b>${esc(suggestion.title)}</b><span>${esc(suggestion.detail)}</span>`;
-  b.addEventListener('click', () => sendText(suggestion.prompt));
-  $('chips').appendChild(b);
+for (const panel of PANELS) {
+  const button = document.createElement('button');
+  button.className = 'panel-tile tile-' + panel.id;
+  button.id = 'open-' + panel.id;
+  button.innerHTML = `<img src="/static/v2/icons/${panel.icon}.svg" alt=""><strong>${panel.title}</strong><span aria-hidden="true">›</span>`;
+  button.onclick = () => setPage(panel.id);
+  $('chips').appendChild(button);
 }
+$('panelBack').onclick = () => { const id = ui.page; setPage('dashboard'); $('open-' + id)?.focus(); };
+$('panelRefresh').onclick = () => DisplayPanels.refresh();
 
 /* ---- demo: fake client for previewing the page on a desktop browser ---- */
 const demo = DEMO === null ? null : (() => {

@@ -263,10 +263,43 @@ async def test_tool_call_note_is_not_a_question():
     assert c.recognised == 1 and c.state == 'speaking'
 
 
+@pytest.mark.asyncio
+async def test_tool_status_is_scoped_ephemeral_and_not_a_message():
+    client = make_client()
+    client.hub.session_id = 'session'
+    await ask(client)
+    event = {'type': 'tool_status', 'category': 'search', 'id': 'call', 'state': 'start', 'session_id': 'session'}
+    await client._on_json({**event, 'session_id': 'old'})
+    client.active_trace = 'b'*32
+    await client._on_json({**event, 'timing_id':'a'*32})
+    assert not client.status()['tool_hint']
+    await client._on_json(event)
+    assert client.status()['tool_hint'] == '正在联网搜索'
+    await client._on_json({**event, 'id': 'old', 'state': 'end'})
+    assert client.status()['tool_hint']
+    await client._on_json({**event, 'state': 'end'})
+    assert not client.status()['tool_hint'] and client.recognised == 1
+
+
 def toasts(c):
     shown = []
     c.events.publish = lambda event, data: shown.append(data['text']) if event == 'toast' else None
     return shown
+
+
+@pytest.mark.asyncio
+async def test_first_output_timed_at_dequeue_not_receive(caplog):
+    client = make_client()
+    await client.start_listening('realtime')
+    client.speech_end = time.monotonic()
+    caplog.set_level('INFO')
+    await client._on_json({'type':'stt','text':'测试','timing_id':'a'*32,'voice_input':True})
+    client._on_audio(PACKET)
+    assert 'stage=stt_to_output' not in caplog.text
+    client.audio.player.pull(960)
+    await asyncio.sleep(0)
+    assert 'stage=speech_end_to_output' in caplog.text
+    assert caplog.text.count('stage=stt_to_output') == 1
 
 
 async def tick(c, seconds=0.25):

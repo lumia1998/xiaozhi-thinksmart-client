@@ -8,6 +8,7 @@
 <link rel="stylesheet" href="/static/v2/app.css">
 <link rel="stylesheet" href="/static/v2/workspace.css">
 <link rel="stylesheet" href="/static/v2/rich-content.css">
+<link rel="stylesheet" href="/static/v2/panels.css">
 </head>
 <body data-state="idle" data-page="dashboard" class="fresh">
 <div class="app">
@@ -63,11 +64,23 @@
     <section class="side">
       <section class="welcome" id="welcome" aria-label="仪表盘">
         <div class="dashboard-heading">
-          <div><p class="greet" id="greet">你好</p><h1>今天想做些什么？</h1></div>
+          <div><p class="greet" id="greet">你好</p><h1>家庭中心</h1></div>
           <div class="dashboard-date"><span class="big-time" id="bigTime">--:--</span><span class="big-date" id="bigDate"></span></div></div>
         <div class="dashboard-section suggestions"><div class="chips" id="chips"></div></div>
       </section>
 
+      <section class="display-panel" id="displayPanel" hidden aria-labelledby="panelTitle">
+        <header class="panel-header"><button id="panelBack" type="button">‹ 首页</button><h1 id="panelTitle" tabindex="-1"></h1><button id="panelRefresh" type="button">刷新</button></header>
+        <p id="panelStatus" role="status"></p><div id="panelBody"></div>
+        <button id="agendaMic" type="button" hidden><img src="/static/v2/icons/mic.svg" alt=""><span>按住说日程</span></button>
+        <dialog id="agendaEditor" aria-labelledby="agendaEditorTitle"><form id="agendaDraft">
+          <h2 id="agendaEditorTitle">添加日程</h2><p id="agendaDraftDate"></p>
+          <label for="agendaName">事项</label><input id="agendaName" required maxlength="100" autocomplete="off">
+          <label for="agendaTime">时间（可选）</label><input id="agendaTime" type="time">
+          <p id="agendaDraftError" role="status"></p>
+          <div><button type="button" id="agendaDiscard">取消</button><button type="submit">保存日程</button></div>
+        </form></dialog>
+      </section>
       <div class="convo" id="convo">
         <div class="convo-head">
           <img class="tile sm" id="headLogo" alt="">
@@ -81,7 +94,7 @@
     </section>
     <form class="composer" id="composer">
       <label class="sr-only" for="messageInput">输入消息</label>
-      <textarea id="messageInput" rows="1" maxlength="8000" placeholder="试着说：播放音乐、调节灯光、查询天气…" enterkeyhint="send"></textarea>
+      <textarea id="messageInput" rows="1" maxlength="8000" placeholder="输入消息，或叫「小葵」" enterkeyhint="send"></textarea>
       <div class="composer-footer">
         <section class="stage" aria-label="语音控制">
           <button type="button" class="mic" id="btnMic" aria-label="说话" title="点按说话，长按录音"><i class="mic-ring" id="micRing"></i><img src="/static/v2/icons/mic.svg" alt=""></button>
@@ -277,6 +290,7 @@
 <script src="/static/v2/vendor/purify.min.js"></script>
 <script src="/static/v2/vendor/highlight.min.js"></script>
 <script src="/static/v2/rich-content.js"></script>
+<script src="/static/v2/panels.js"></script>
 <script src="/static/v2/app.js"></script>
 </body>
 </html>
